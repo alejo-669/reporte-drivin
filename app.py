@@ -226,6 +226,7 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
                 "otif": o.get("otif"),
                 "near_pod": o.get("near_pod"),
                 "units_1": o.get("units_1") or 0,
+                "units_2": o.get("units_2") or 0,
                 "client_name": o.get("client_name"),
                 "tags": json.dumps(o.get("tags", [])),
                 "pod_arrival": o.get("pod_arrival"),
@@ -233,7 +234,10 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df["units_1"] = df["units_1"].apply(format_bultos)
+    df["units_2"] = df["units_2"].apply(lambda x: int(float(x)) if pd.notna(x) and x != 0 else 0)
     df["status_display"] = df["status"].apply(translate_status)
+    df["tipo_viaje"] = df["trip_number"].apply(
+        lambda x: "Primera vuelta" if x == 1 else ("Segunda vuelta" if x == 2 else "-"))
     for col in ["reason", "near_pod", "client_name", "driver_name", "address_city"]:
         if col in df.columns:
             df[col] = df[col].apply(clean_none)
@@ -259,6 +263,12 @@ def color_status_light(val):
     elif val == "Rechazado":
         return "background-color: #fee2e2; color: #991b1b"
     elif val in ("Parcial", "Pendiente"):
+        return "background-color: #fef9c3; color: #854d0e"
+    return ""
+
+
+def color_tipo_viaje(val):
+    if val == "Segunda vuelta":
         return "background-color: #fef9c3; color: #854d0e"
     return ""
 
@@ -304,11 +314,14 @@ if centro_sel != "Todos":
 
 # ── KPIs ────────────────────────────────────────────────────
 total_entregas = len(df)
+entregas_realizadas = ((df["status"] == "approved") | (df["status"] == "partial")).sum()
+otd_pct = round(entregas_realizadas / total_entregas * 100, 1) if total_entregas else 0
 otif_si = (df["otif"] == "Si").sum()
 otif_pct = round(otif_si / total_entregas * 100, 1) if total_entregas else 0
 rechazos = (df["status"] == "rejected").sum()
 parciales = (df["status"] == "partial").sum()
 total_bultos = int(df["units_1"].sum())
+total_venta = int(df["units_2"].sum())
 
 vehiculos = df.drop_duplicates(subset=["vehicle_code"])
 sin_iniciar = ((vehiculos["route_is_started"] == False) & (vehiculos["route_is_finished"] == False)).sum()
@@ -333,13 +346,15 @@ if not started_times.empty:
 else:
     hr_prom = "-"
 
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric("📦 Total Entregas", f"{total_entregas:,}")
-k2.metric("✅ OTIF", f"{otif_pct}%")
-k3.metric("❌ Rechazos", rechazos)
-k4.metric("⚠️ Parciales", parciales)
-k5.metric("📦 Bultos", f"{total_bultos:,}")
-k6.metric("🕐 Hr Prom. Inicio", hr_prom)
+k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
+k1.metric("📦 Entregas", f"{total_entregas:,}")
+k2.metric("🚚 OTD", f"{otd_pct}%")
+k3.metric("✅ OTIF", f"{otif_pct}%")
+k4.metric("❌ Rechazos", rechazos)
+k5.metric("⚠️ Parciales", parciales)
+k6.metric("📦 Bultos", f"{total_bultos:,}")
+k7.metric("💰 Venta Total", f"${total_venta:,}")
+k8.metric("🕐 Hr Inicio", hr_prom)
 
 if sin_iniciar > 0:
     st.markdown(
@@ -363,33 +378,39 @@ if sala_sel != "— Sin filtro —":
         if ciudad and ciudad != "-":
             st.caption(f"📍 {ciudad}")
 
-        s1, s2, s3, s4, s5 = st.columns(5)
+        s1, s2, s3, s4, s5, s6 = st.columns(6)
         total_sala = len(df_sala)
+        realizadas_sala = ((df_sala["status"] == "approved") | (df_sala["status"] == "partial")).sum()
+        otd_sala = round(realizadas_sala / total_sala * 100, 1) if total_sala else 0
         otif_sala = (df_sala["otif"] == "Si").sum()
         otif_pct_sala = round(otif_sala / total_sala * 100, 1) if total_sala else 0
         rechazos_sala = (df_sala["status"] == "rejected").sum()
         bultos_sala = int(df_sala["units_1"].sum())
+        venta_sala = int(df_sala["units_2"].sum())
         tiempos = df_sala["tracked_service_time"].dropna()
         avg_espera = round(tiempos.mean(), 1) if not tiempos.empty else 0
 
         s1.metric("Visitas", total_sala)
-        s2.metric("OTIF", f"{otif_pct_sala}%")
-        s3.metric("Rechazos", rechazos_sala)
+        s2.metric("OTD", f"{otd_sala}%")
+        s3.metric("OTIF", f"{otif_pct_sala}%")
         s4.metric("Bultos", f"{bultos_sala:,}")
-        s5.metric("Espera Prom. (min)", f"{avg_espera}")
+        s5.metric("Venta", f"${venta_sala:,}")
+        s6.metric("Espera Prom.", f"{avg_espera} min")
 
         st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
 
-        df_show = df_sala[["planned_date", "driver_name", "vehicle_code", "units_1",
-                           "status_display", "reason", "otif", "near_pod", "tracked_service_time"]].copy()
-        df_show.columns = ["Fecha", "Conductor", "Vehículo", "Bultos",
-                           "Status", "Motivo", "OTIF", "Near POD", "Espera GPS (min)"]
+        df_show = df_sala[["planned_date", "driver_name", "vehicle_code", "tipo_viaje", "units_1",
+                           "units_2", "status_display", "reason", "otif", "near_pod", "tracked_service_time"]].copy()
+        df_show.columns = ["Fecha", "Conductor", "Vehículo", "Tipo Viaje", "Bultos",
+                           "Venta Total", "Status", "Motivo", "OTIF", "Near POD", "Espera GPS (min)"]
         df_show["Espera GPS (min)"] = df_show["Espera GPS (min)"].apply(
             lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_show["Venta Total"] = df_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
         df_show = df_show.fillna("-")
 
         st.dataframe(
-            df_show.style.map(color_status_light, subset=["Status"]),
+            df_show.style.map(color_status_light, subset=["Status"])
+                         .map(color_tipo_viaje, subset=["Tipo Viaje"]),
             use_container_width=True,
             hide_index=True,
             height=400,
@@ -455,15 +476,19 @@ else:
             df_ent = df_ent[df_ent["reason"] == motivo_sel]
 
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
-                              "units_1", "status_display", "reason", "otif", "near_pod", "tracked_service_time"]].copy()
+                              "tipo_viaje", "units_1", "units_2", "status_display", "reason",
+                              "otif", "near_pod", "tracked_service_time"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
-                               "Bultos", "Status", "Motivo", "OTIF", "Near POD", "Espera GPS"]
+                               "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
+                               "OTIF", "Near POD", "Espera GPS"]
         df_ent_show["Espera GPS"] = df_ent_show["Espera GPS"].apply(
             lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_ent_show["Venta Total"] = df_ent_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
         df_ent_show = df_ent_show.fillna("-")
 
         st.dataframe(
-            df_ent_show.style.map(color_status_light, subset=["Status"]),
+            df_ent_show.style.map(color_status_light, subset=["Status"])
+                             .map(color_tipo_viaje, subset=["Tipo Viaje"]),
             use_container_width=True,
             hide_index=True,
             height=500,
@@ -565,11 +590,16 @@ else:
         st.markdown('<div class="section-title">🏭 Entregas por Centro de Venta</div>', unsafe_allow_html=True)
         ent_cv = df.groupby("schema_name").agg(
             entregas=("order_code", "count"),
+            realizadas=("status", lambda x: ((x == "approved") | (x == "partial")).sum()),
             otif_pct=("otif", lambda x: round((x == "Si").sum() / len(x) * 100, 1)),
             bultos=("units_1", "sum"),
+            venta=("units_2", "sum"),
         ).reset_index().sort_values("entregas", ascending=False)
+        ent_cv["otd_pct"] = (ent_cv["realizadas"] / ent_cv["entregas"] * 100).round(1)
         ent_cv["bultos"] = ent_cv["bultos"].astype(int)
-        ent_cv.columns = ["Centro", "Entregas", "OTIF %", "Bultos"]
+        ent_cv["venta"] = ent_cv["venta"].apply(lambda x: f"${int(x):,}")
+        ent_cv = ent_cv[["schema_name", "entregas", "otd_pct", "otif_pct", "bultos", "venta"]]
+        ent_cv.columns = ["Centro", "Entregas", "OTD %", "OTIF %", "Bultos", "Venta Total"]
         st.dataframe(ent_cv, use_container_width=True, hide_index=True)
 
 
