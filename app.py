@@ -1,25 +1,24 @@
 """
 Dashboard Operacional Drivin — Bimbo Ideal
 ==========================================
-Visualiza entregas, KPIs, tiempos de espera por sala,
-conductores y tendencias. Auto-refresh cada 10 minutos.
-
-Para correr localmente:
-  streamlit run app.py
-
-Variables de entorno necesarias (en Streamlit Cloud van en Secrets):
-  DRIVIN_API_KEY = "tu_api_key_aquí"
+Tema claro · Paleta Bimbo (azul/celeste/blanco)
+Zona horaria: America/Santiago
+Auto-refresh cada 10 minutos
 """
 
 import os
 import json
-import sqlite3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
+
+# ── Zona horaria Chile ──────────────────────────────────────
+TZ_CHILE = ZoneInfo("America/Santiago")
+NOW_CHILE = datetime.now(TZ_CHILE)
 
 # ── Page Config ─────────────────────────────────────────────
 st.set_page_config(
@@ -29,64 +28,145 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Auto-refresh cada 10 minutos (600,000 ms)
+# Auto-refresh cada 10 minutos
 st_autorefresh(interval=600_000, key="data_refresh")
 
-# ── Estilos CSS ─────────────────────────────────────────────
+# ── Traducciones y mapeos ───────────────────────────────────
+STATUS_MAP = {
+    "approved": "Aprobado",
+    "rejected": "Rechazado",
+    "partial": "Parcial",
+    "pending": "Pendiente",
+}
+
+def translate_status(val):
+    if pd.isna(val) or val is None or val == "":
+        return "-"
+    return STATUS_MAP.get(str(val).lower(), str(val))
+
+def clean_none(val):
+    if pd.isna(val) or val is None or str(val).strip().lower() in ("none", "nan", ""):
+        return "-"
+    return val
+
+def format_bultos(val):
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return 0
+
+# ── Estilos CSS — Tema Claro Bimbo ──────────────────────────
 st.markdown("""
 <style>
-    /* KPI cards */
+    .stApp, .main, [data-testid="stAppViewContainer"] {
+        background-color: #ffffff !important;
+        color: #1a1a2e !important;
+    }
+    section[data-testid="stSidebar"] {
+        background-color: #f0f4f8 !important;
+    }
+    .main-header {
+        font-size: 1.7rem;
+        font-weight: 800;
+        color: #003087;
+        margin-bottom: 2px;
+        letter-spacing: -0.3px;
+    }
+    .sub-header {
+        font-size: 0.88rem;
+        color: #5a6a7e;
+        margin-bottom: 1.2rem;
+    }
     div[data-testid="metric-container"] {
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid #334155;
+        background: linear-gradient(135deg, #f7faff 0%, #edf2fa 100%);
+        border: 1px solid #cdd9e5;
         border-radius: 12px;
-        padding: 16px;
+        padding: 16px 18px;
+        box-shadow: 0 1px 4px rgba(0,48,135,0.06);
     }
     div[data-testid="metric-container"] label {
-        color: #94a3b8 !important;
-        font-size: 0.85rem !important;
+        color: #5a6a7e !important;
+        font-size: 0.82rem !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
     }
     div[data-testid="metric-container"] [data-testid="stMetricValue"] {
         font-size: 1.8rem !important;
-        font-weight: 700 !important;
+        font-weight: 800 !important;
+        color: #003087 !important;
     }
-    /* Header */
-    .main-header {
-        font-size: 1.6rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin-bottom: 0.5rem;
-    }
-    .sub-header {
-        font-size: 0.9rem;
-        color: #64748b;
-        margin-bottom: 1.5rem;
-    }
-    /* Alerta */
     .alerta-box {
-        background: linear-gradient(135deg, #7f1d1d 0%, #991b1b 100%);
-        border: 1px solid #dc2626;
+        background: linear-gradient(135deg, #fff5f5 0%, #fee2e2 100%);
+        border: 1px solid #f87171;
         border-radius: 10px;
         padding: 12px 18px;
-        color: #fecaca;
+        color: #b91c1c;
         font-weight: 600;
         margin-bottom: 1rem;
     }
-    /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 6px;
+        border-bottom: 2px solid #e2e8f0;
     }
     .stTabs [data-baseweb="tab"] {
-        border-radius: 8px;
+        border-radius: 8px 8px 0 0;
+        color: #5a6a7e;
+        font-weight: 600;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #003087 !important;
+        border-bottom: 3px solid #003087 !important;
+    }
+    .stDataFrame thead tr th {
+        background-color: #003087 !important;
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        text-align: center !important;
+    }
+    .stDataFrame tbody tr:nth-child(even) {
+        background-color: #f7faff;
+    }
+    div[data-baseweb="select"] > div {
+        border-color: #cdd9e5 !important;
+        background-color: #f7faff !important;
+        color: #1a1a2e !important;
+    }
+    hr {
+        border-color: #e2e8f0 !important;
+    }
+    .section-title {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #003087;
+        margin-bottom: 0.5rem;
+        padding-bottom: 4px;
+        border-bottom: 2px solid #38bdf8;
+        display: inline-block;
     }
 </style>
 """, unsafe_allow_html=True)
 
 
+# ── Plotly theme ────────────────────────────────────────────
+PLOTLY_LAYOUT = dict(
+    template="plotly_white",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(255,255,255,1)",
+    font=dict(color="#1a1a2e", size=12),
+    margin=dict(l=10, r=10, t=30, b=10),
+    colorway=["#003087", "#38bdf8", "#0ea5e9", "#7dd3fc", "#0369a1", "#bae6fd"],
+)
+
+BIMBO_BLUE = "#003087"
+BIMBO_CELESTE = "#38bdf8"
+BIMBO_GREEN = "#16a34a"
+BIMBO_RED = "#dc2626"
+
+
 # ── Data Loading ────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
-    """Carga datos directo de la API de Drivin."""
     import requests
 
     api_key = os.environ.get("DRIVIN_API_KEY", "")
@@ -151,19 +231,48 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
                 "pod_arrival": o.get("pod_arrival"),
             })
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    df["units_1"] = df["units_1"].apply(format_bultos)
+    df["status_display"] = df["status"].apply(translate_status)
+    for col in ["reason", "near_pod", "client_name", "driver_name", "address_city"]:
+        if col in df.columns:
+            df[col] = df[col].apply(clean_none)
+
+    return df
+
+
+def parse_hour_chile(dt_str):
+    if not dt_str or pd.isna(dt_str):
+        return "-"
+    try:
+        dt = pd.to_datetime(dt_str)
+        if dt.tzinfo is None:
+            dt = dt.tz_localize("UTC")
+        return dt.astimezone(TZ_CHILE).strftime("%H:%M")
+    except Exception:
+        return "-"
+
+
+def color_status_light(val):
+    if val == "Aprobado":
+        return "background-color: #dcfce7; color: #166534"
+    elif val == "Rechazado":
+        return "background-color: #fee2e2; color: #991b1b"
+    elif val in ("Parcial", "Pendiente"):
+        return "background-color: #fef9c3; color: #854d0e"
+    return ""
 
 
 # ── Header ──────────────────────────────────────────────────
+hora_chile = NOW_CHILE.strftime("%d/%m/%Y %H:%M")
 st.markdown('<div class="main-header">🚛 Dashboard Operacional Drivin — Bimbo Ideal</div>', unsafe_allow_html=True)
-st.markdown(f'<div class="sub-header">Auto-refresh cada 10 min · Última actualización: {datetime.now().strftime("%d/%m/%Y %H:%M")}</div>', unsafe_allow_html=True)
+st.markdown(f'<div class="sub-header">Auto-refresh cada 10 min · Última actualización: {hora_chile}</div>', unsafe_allow_html=True)
 
 # ── Filtros ─────────────────────────────────────────────────
 col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
 
 with col_f1:
-    # Rango de fechas (máx 7 días por limitación API)
-    today = datetime.now().date()
+    today = NOW_CHILE.date()
     date_range = st.date_input(
         "📅 Rango de fechas",
         value=(today, today),
@@ -175,12 +284,11 @@ with col_f1:
     else:
         start_date = end_date = today
 
-# Cargar datos
 df = load_data_from_api(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
 
 if df.empty:
     st.warning("⚠️ No hay datos disponibles. Verifica tu API Key en Secrets de Streamlit Cloud.")
-    st.info("Ve a Settings → Secrets y agrega:\n```\nDRIVIN_API_KEY = \"tu_api_key\"\n```")
+    st.info('Ve a **Settings → Secrets** y agrega:\n```\nDRIVIN_API_KEY = "tu_api_key"\n```')
     st.stop()
 
 with col_f2:
@@ -191,7 +299,6 @@ with col_f3:
     codigos_sala = ["— Sin filtro —"] + sorted(df["address_code"].dropna().unique().tolist())
     sala_sel = st.selectbox("🏪 Código sala (zoom detalle)", codigos_sala)
 
-# Aplicar filtro de centro
 if centro_sel != "Todos":
     df = df[df["schema_name"] == centro_sel]
 
@@ -203,21 +310,29 @@ rechazos = (df["status"] == "rejected").sum()
 parciales = (df["status"] == "partial").sum()
 total_bultos = int(df["units_1"].sum())
 
-# Vehículos únicos y sin iniciar
 vehiculos = df.drop_duplicates(subset=["vehicle_code"])
-sin_iniciar = (vehiculos["route_is_started"] == False).sum()
+sin_iniciar = ((vehiculos["route_is_started"] == False) & (vehiculos["route_is_finished"] == False)).sum()
 
-# Hora promedio inicio
 started_times = df.dropna(subset=["route_started_at"]).drop_duplicates("vehicle_code")
 if not started_times.empty:
-    hrs = pd.to_datetime(started_times["route_started_at"]).dt.hour * 60 + \
-          pd.to_datetime(started_times["route_started_at"]).dt.minute
-    avg_min = int(hrs.mean())
-    hr_prom = f"{avg_min // 60:02d}:{avg_min % 60:02d}"
+    def to_chile_minutes(dt_str):
+        try:
+            dt = pd.to_datetime(dt_str)
+            if dt.tzinfo is None:
+                dt = dt.tz_localize("UTC")
+            dt_chile = dt.astimezone(TZ_CHILE)
+            return dt_chile.hour * 60 + dt_chile.minute
+        except Exception:
+            return None
+    mins = started_times["route_started_at"].apply(to_chile_minutes).dropna()
+    if not mins.empty:
+        avg_min = int(mins.mean())
+        hr_prom = f"{avg_min // 60:02d}:{avg_min % 60:02d}"
+    else:
+        hr_prom = "-"
 else:
-    hr_prom = "—"
+    hr_prom = "-"
 
-# Mostrar KPIs
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 k1.metric("📦 Total Entregas", f"{total_entregas:,}")
 k2.metric("✅ OTIF", f"{otif_pct}%")
@@ -226,7 +341,6 @@ k4.metric("⚠️ Parciales", parciales)
 k5.metric("📦 Bultos", f"{total_bultos:,}")
 k6.metric("🕐 Hr Prom. Inicio", hr_prom)
 
-# Alerta rutas sin iniciar
 if sin_iniciar > 0:
     st.markdown(
         f'<div class="alerta-box">⚠️ {sin_iniciar} ruta(s) sin iniciar de {len(vehiculos)} vehículos</div>',
@@ -235,24 +349,20 @@ if sin_iniciar > 0:
 
 st.divider()
 
-# ── Vista condicional: sala seleccionada o vista general ────
+# ── Vista condicional ───────────────────────────────────────
 if sala_sel != "— Sin filtro —":
-    # ════════════════════════════════════════════════════════
-    # FICHA DETALLE DE SALA
-    # ════════════════════════════════════════════════════════
     df_sala = df[df["address_code"] == sala_sel]
 
     if df_sala.empty:
         st.warning(f"No hay datos para la sala {sala_sel} en este rango de fechas.")
     else:
         nombre_sala = df_sala["address_name"].iloc[0]
-        ciudad = df_sala["address_city"].iloc[0] if "address_city" in df_sala.columns else ""
+        ciudad = df_sala["address_city"].iloc[0] if "address_city" in df_sala.columns else "-"
 
-        st.subheader(f"🏪 Detalle Sala: {sala_sel} — {nombre_sala}")
-        if ciudad:
+        st.markdown(f'<div class="section-title">🏪 Detalle Sala: {sala_sel} — {nombre_sala}</div>', unsafe_allow_html=True)
+        if ciudad and ciudad != "-":
             st.caption(f"📍 {ciudad}")
 
-        # Mini KPIs de la sala
         s1, s2, s3, s4, s5 = st.columns(5)
         total_sala = len(df_sala)
         otif_sala = (df_sala["otif"] == "Si").sum()
@@ -268,154 +378,113 @@ if sala_sel != "— Sin filtro —":
         s4.metric("Bultos", f"{bultos_sala:,}")
         s5.metric("Espera Prom. (min)", f"{avg_espera}")
 
-        st.markdown("##### 📋 Historial de visitas")
+        st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
 
-        # Tabla de detalle
-        cols_show = ["planned_date", "driver_name", "vehicle_code", "units_1",
-                     "status", "reason", "otif", "near_pod", "tracked_service_time"]
-        df_show = df_sala[cols_show].copy()
+        df_show = df_sala[["planned_date", "driver_name", "vehicle_code", "units_1",
+                           "status_display", "reason", "otif", "near_pod", "tracked_service_time"]].copy()
         df_show.columns = ["Fecha", "Conductor", "Vehículo", "Bultos",
                            "Status", "Motivo", "OTIF", "Near POD", "Espera GPS (min)"]
-
-        # Colorear status
-        def color_status(val):
-            if val == "approved":
-                return "background-color: #166534; color: #bbf7d0"
-            elif val == "rejected":
-                return "background-color: #7f1d1d; color: #fecaca"
-            elif val == "partial":
-                return "background-color: #78350f; color: #fde68a"
-            return ""
+        df_show["Espera GPS (min)"] = df_show["Espera GPS (min)"].apply(
+            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_show = df_show.fillna("-")
 
         st.dataframe(
-            df_show.style.map(color_status, subset=["Status"]),
+            df_show.style.map(color_status_light, subset=["Status"]),
             use_container_width=True,
             hide_index=True,
             height=400,
         )
 
-        # Gráfico de tiempo de espera por visita
         if not tiempos.empty:
-            st.markdown("##### ⏱️ Tiempo de espera GPS por visita")
+            st.markdown('<div class="section-title">⏱️ Tiempo de espera GPS por visita</div>', unsafe_allow_html=True)
             df_chart = df_sala[["planned_date", "tracked_service_time", "driver_name"]].dropna(subset=["tracked_service_time"])
             fig = px.bar(
-                df_chart,
-                x="planned_date",
-                y="tracked_service_time",
-                color="driver_name",
+                df_chart, x="planned_date", y="tracked_service_time", color="driver_name",
                 labels={"tracked_service_time": "Minutos", "planned_date": "Fecha", "driver_name": "Conductor"},
-                color_discrete_sequence=px.colors.qualitative.Set2,
+                color_discrete_sequence=[BIMBO_BLUE, BIMBO_CELESTE, "#0ea5e9", "#7dd3fc"],
             )
-            fig.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                height=350,
-                margin=dict(l=0, r=0, t=30, b=0),
-            )
+            fig.update_layout(**PLOTLY_LAYOUT, height=350)
+            fig.update_xaxes(dtick="D1", tickformat="%d/%m")
             st.plotly_chart(fig, use_container_width=True)
 
 else:
-    # ════════════════════════════════════════════════════════
-    # VISTA GENERAL (sin sala seleccionada)
-    # ════════════════════════════════════════════════════════
-
     tab1, tab2, tab3, tab4 = st.tabs([
         "🚗 Vehículos", "📦 Status Entregas", "🏆 Ranking Salas", "📈 Tendencias"
     ])
 
-    # ── TAB 1: Vehículos ──────────────────────────────────
     with tab1:
-        st.markdown("##### Estado de sesión por vehículo")
+        st.markdown('<div class="section-title">🚗 Estado de sesión por vehículo</div>', unsafe_allow_html=True)
         df_veh = df.drop_duplicates(subset=["vehicle_code"]).copy()
         df_veh["estado"] = df_veh.apply(
             lambda r: "Finalizada" if r["route_is_finished"]
             else ("En ruta" if r["route_is_started"] else "Sin iniciar"),
             axis=1,
         )
-        # Extraer hora
-        df_veh["hr_inicio"] = pd.to_datetime(df_veh["route_started_at"], errors="coerce").dt.strftime("%H:%M").fillna("—")
-        df_veh["hr_fin"] = pd.to_datetime(df_veh["route_finished_at"], errors="coerce").dt.strftime("%H:%M").fillna("—")
+        df_veh["hr_inicio"] = df_veh["route_started_at"].apply(parse_hour_chile)
+        df_veh["hr_fin"] = df_veh["route_finished_at"].apply(parse_hour_chile)
 
-        cols_veh = ["vehicle_code", "driver_name", "schema_name", "estado", "hr_inicio", "hr_fin"]
-        df_veh_show = df_veh[cols_veh].copy()
+        df_veh_show = df_veh[["vehicle_code", "driver_name", "schema_name", "estado", "hr_inicio", "hr_fin"]].copy()
         df_veh_show.columns = ["Vehículo", "Conductor", "Centro", "Estado", "Inicio", "Fin"]
+        df_veh_show = df_veh_show.fillna("-")
 
-        def color_estado(val):
+        def color_estado_light(val):
             if val == "Finalizada":
-                return "background-color: #166534; color: #bbf7d0"
+                return "background-color: #dcfce7; color: #166534"
             elif val == "En ruta":
-                return "background-color: #1e40af; color: #bfdbfe"
+                return "background-color: #dbeafe; color: #1e40af"
             elif val == "Sin iniciar":
-                return "background-color: #7f1d1d; color: #fecaca"
+                return "background-color: #fee2e2; color: #991b1b"
             return ""
 
         st.dataframe(
-            df_veh_show.sort_values("Estado").style.map(color_estado, subset=["Estado"]),
+            df_veh_show.sort_values("Estado").style.map(color_estado_light, subset=["Estado"]),
             use_container_width=True,
             hide_index=True,
             height=500,
         )
 
-    # ── TAB 2: Status Entregas ────────────────────────────
     with tab2:
-        st.markdown("##### Detalle de entregas por sala")
+        st.markdown('<div class="section-title">📦 Detalle de entregas por sala</div>', unsafe_allow_html=True)
 
-        # Filtro de motivo
-        motivos = ["Todos"] + sorted(df["reason"].dropna().unique().tolist())
+        motivos_list = df["reason"].replace("-", pd.NA).dropna().unique().tolist()
+        motivos = ["Todos"] + sorted(motivos_list)
         motivo_sel = st.selectbox("Filtrar por motivo", motivos)
 
         df_ent = df.copy()
         if motivo_sel != "Todos":
             df_ent = df_ent[df_ent["reason"] == motivo_sel]
 
-        cols_ent = ["address_code", "address_name", "vehicle_code", "driver_name",
-                    "units_1", "status", "reason", "otif", "near_pod", "tracked_service_time"]
-        df_ent_show = df_ent[cols_ent].copy()
+        df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
+                              "units_1", "status_display", "reason", "otif", "near_pod", "tracked_service_time"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
                                "Bultos", "Status", "Motivo", "OTIF", "Near POD", "Espera GPS"]
-
-        def color_status_ent(val):
-            if val == "approved":
-                return "background-color: #166534; color: #bbf7d0"
-            elif val == "rejected":
-                return "background-color: #7f1d1d; color: #fecaca"
-            elif val == "partial":
-                return "background-color: #78350f; color: #fde68a"
-            return ""
+        df_ent_show["Espera GPS"] = df_ent_show["Espera GPS"].apply(
+            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_ent_show = df_ent_show.fillna("-")
 
         st.dataframe(
-            df_ent_show.style.map(color_status_ent, subset=["Status"]),
+            df_ent_show.style.map(color_status_light, subset=["Status"]),
             use_container_width=True,
             hide_index=True,
             height=500,
         )
 
-        # Resumen de motivos
-        st.markdown("##### Distribución de motivos")
-        reason_counts = df["reason"].value_counts().reset_index()
-        reason_counts.columns = ["Motivo", "Cantidad"]
-        fig_reasons = px.bar(
-            reason_counts,
-            x="Cantidad",
-            y="Motivo",
-            orientation="h",
-            color="Cantidad",
-            color_continuous_scale=["#1e40af", "#22d3ee"],
-        )
-        fig_reasons.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            height=300,
-            margin=dict(l=0, r=0, t=10, b=0),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_reasons, use_container_width=True)
+        st.markdown('<div class="section-title">📊 Distribución de motivos</div>', unsafe_allow_html=True)
+        reason_data = df[df["reason"] != "-"]["reason"].value_counts().reset_index()
+        reason_data.columns = ["Motivo", "Cantidad"]
+        if not reason_data.empty:
+            fig_reasons = px.bar(
+                reason_data, x="Cantidad", y="Motivo", orientation="h",
+                color="Cantidad", color_continuous_scale=[[0, BIMBO_CELESTE], [1, BIMBO_BLUE]],
+                text="Cantidad",
+            )
+            fig_reasons.update_layout(**PLOTLY_LAYOUT, height=300, showlegend=False)
+            fig_reasons.update_traces(textposition="outside")
+            fig_reasons.update_coloraxes(showscale=False)
+            st.plotly_chart(fig_reasons, use_container_width=True)
 
-    # ── TAB 3: Ranking Salas ──────────────────────────────
     with tab3:
-        st.markdown("##### 🏆 Top 10 Salas con Mayor Tiempo de Espera GPS")
+        st.markdown('<div class="section-title">🏆 Top 10 Salas con Mayor Tiempo de Espera GPS</div>', unsafe_allow_html=True)
 
         df_times = df[df["tracked_service_time"].notna() & (df["tracked_service_time"] > 0)].copy()
 
@@ -428,87 +497,74 @@ else:
                 visitas=("tracked_service_time", "count"),
             ).reset_index().sort_values("max_espera", ascending=False).head(10)
             sala_agg["avg_espera"] = sala_agg["avg_espera"].round(1)
+            sala_agg["max_espera"] = sala_agg["max_espera"].astype(int)
 
             fig_top = px.bar(
-                sala_agg,
-                x="max_espera",
-                y="address_name",
-                orientation="h",
-                text="max_espera",
-                color="max_espera",
-                color_continuous_scale=["#22d3ee", "#dc2626"],
+                sala_agg, x="max_espera", y="address_name", orientation="h",
+                text="max_espera", color="max_espera",
+                color_continuous_scale=[[0, BIMBO_CELESTE], [0.5, BIMBO_BLUE], [1, BIMBO_RED]],
                 labels={"max_espera": "Max Espera (min)", "address_name": "Sala"},
             )
-            fig_top.update_layout(
-                template="plotly_dark",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                height=400,
-                margin=dict(l=0, r=0, t=10, b=0),
-                showlegend=False,
-                yaxis=dict(autorange="reversed"),
-            )
+            fig_top.update_layout(**PLOTLY_LAYOUT, height=420, showlegend=False, yaxis=dict(autorange="reversed"))
             fig_top.update_traces(textposition="outside")
+            fig_top.update_coloraxes(showscale=False)
             st.plotly_chart(fig_top, use_container_width=True)
 
-            # Tabla complementaria
-            sala_agg_show = sala_agg.copy()
-            sala_agg_show.columns = ["Código", "Sala", "Max Espera (min)", "Prom Espera (min)", "Visitas"]
-            st.dataframe(sala_agg_show, use_container_width=True, hide_index=True)
+            sala_show = sala_agg[["address_code", "address_name", "max_espera", "avg_espera", "visitas"]].copy()
+            sala_show.columns = ["Código", "Sala", "Max Espera (min)", "Prom Espera (min)", "Visitas"]
+            st.dataframe(sala_show, use_container_width=True, hide_index=True)
 
-    # ── TAB 4: Tendencias ─────────────────────────────────
     with tab4:
-        st.markdown("##### 📈 Tendencia de Bultos y OTIF por Día")
+        st.markdown('<div class="section-title">📈 Tendencia de Bultos y OTIF por Día</div>', unsafe_allow_html=True)
 
         df_trend = df.copy()
         df_trend["fecha"] = pd.to_datetime(df_trend["planned_date"])
 
-        # Bultos por día
         bultos_dia = df_trend.groupby("fecha")["units_1"].sum().reset_index()
         bultos_dia.columns = ["Fecha", "Bultos"]
 
-        # OTIF por día
         otif_dia = df_trend.groupby("fecha").apply(
             lambda x: round((x["otif"] == "Si").sum() / len(x) * 100, 1) if len(x) > 0 else 0
         ).reset_index()
         otif_dia.columns = ["Fecha", "OTIF %"]
 
         fig_trend = go.Figure()
-        fig_trend.add_trace(go.Bar(
-            x=bultos_dia["Fecha"],
-            y=bultos_dia["Bultos"],
-            name="Bultos",
-            marker_color="#22d3ee",
+
+        fig_trend.add_trace(go.Scatter(
+            x=bultos_dia["Fecha"], y=bultos_dia["Bultos"],
+            name="Bultos", mode="lines+markers",
+            line=dict(color=BIMBO_CELESTE, width=3),
+            marker=dict(size=8, color=BIMBO_CELESTE),
             yaxis="y",
         ))
+
         fig_trend.add_trace(go.Scatter(
-            x=otif_dia["Fecha"],
-            y=otif_dia["OTIF %"],
-            name="OTIF %",
-            mode="lines+markers",
-            line=dict(color="#10b981", width=3),
-            marker=dict(size=8),
+            x=otif_dia["Fecha"], y=otif_dia["OTIF %"],
+            name="OTIF %", mode="lines+markers",
+            line=dict(color=BIMBO_GREEN, width=3),
+            marker=dict(size=8, color=BIMBO_GREEN),
             yaxis="y2",
         ))
+
         fig_trend.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
+            **PLOTLY_LAYOUT,
             height=400,
-            margin=dict(l=0, r=50, t=10, b=0),
-            yaxis=dict(title="Bultos", side="left"),
-            yaxis2=dict(title="OTIF %", side="right", overlaying="y", range=[0, 100]),
+            yaxis=dict(title="Bultos", side="left",
+                       titlefont=dict(color=BIMBO_CELESTE), tickfont=dict(color=BIMBO_CELESTE)),
+            yaxis2=dict(title="OTIF %", side="right", overlaying="y", range=[0, 100],
+                        titlefont=dict(color=BIMBO_GREEN), tickfont=dict(color=BIMBO_GREEN)),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         )
+        fig_trend.update_xaxes(dtick="D1", tickformat="%d/%m/%Y")
         st.plotly_chart(fig_trend, use_container_width=True)
 
-        # Entregas por centro
-        st.markdown("##### 🏭 Entregas por Centro de Venta")
+        st.markdown('<div class="section-title">🏭 Entregas por Centro de Venta</div>', unsafe_allow_html=True)
         ent_cv = df.groupby("schema_name").agg(
             entregas=("order_code", "count"),
             otif_pct=("otif", lambda x: round((x == "Si").sum() / len(x) * 100, 1)),
             bultos=("units_1", "sum"),
         ).reset_index().sort_values("entregas", ascending=False)
+        ent_cv["bultos"] = ent_cv["bultos"].astype(int)
         ent_cv.columns = ["Centro", "Entregas", "OTIF %", "Bultos"]
         st.dataframe(ent_cv, use_container_width=True, hide_index=True)
 
