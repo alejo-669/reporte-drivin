@@ -540,7 +540,7 @@ else:
             st.dataframe(sala_show, use_container_width=True, hide_index=True)
 
     with tab4:
-        st.markdown('<div class="section-title">📈 Tendencia de Bultos y OTIF por Día</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">📈 Tendencia de Bultos, OTD y OTIF por Día</div>', unsafe_allow_html=True)
 
         df_trend = df.copy()
         df_trend["fecha"] = pd.to_datetime(df_trend["planned_date"])
@@ -553,6 +553,13 @@ else:
         ).reset_index()
         otif_dia.columns = ["Fecha", "OTIF %"]
 
+        otd_dia = df_trend.groupby("fecha").apply(
+            lambda x: round(((x["status"] == "approved") | (x["status"] == "partial")).sum() / len(x) * 100, 1) if len(x) > 0 else 0
+        ).reset_index()
+        otd_dia.columns = ["Fecha", "OTD %"]
+
+        BIMBO_ORANGE = "#f59e0b"
+
         fig_trend = go.Figure(
             data=[
                 go.Scatter(
@@ -560,6 +567,13 @@ else:
                     name="Bultos", mode="lines+markers",
                     line=dict(color=BIMBO_CELESTE, width=3),
                     marker=dict(size=8, color=BIMBO_CELESTE),
+                ),
+                go.Scatter(
+                    x=otd_dia["Fecha"], y=otd_dia["OTD %"],
+                    name="OTD %", mode="lines+markers",
+                    line=dict(color=BIMBO_BLUE, width=3),
+                    marker=dict(size=8, color=BIMBO_BLUE),
+                    yaxis="y2",
                 ),
                 go.Scatter(
                     x=otif_dia["Fecha"], y=otif_dia["OTIF %"],
@@ -579,8 +593,8 @@ else:
                 xaxis=dict(dtick="D1", tickformat="%d/%m/%Y"),
                 yaxis=dict(title=dict(text="Bultos", font=dict(color=BIMBO_CELESTE)),
                            tickfont=dict(color=BIMBO_CELESTE), side="left"),
-                yaxis2=dict(title=dict(text="OTIF %", font=dict(color=BIMBO_GREEN)),
-                            tickfont=dict(color=BIMBO_GREEN), side="right",
+                yaxis2=dict(title=dict(text="OTD / OTIF %", font=dict(color=BIMBO_BLUE)),
+                            tickfont=dict(color=BIMBO_BLUE), side="right",
                             overlaying="y", range=[0, 100]),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             ),
