@@ -528,45 +528,38 @@ else:
         ).reset_index()
         otif_dia.columns = ["Fecha", "OTIF %"]
 
-        fig_trend = go.Figure()
-
-        fig_trend.add_trace(go.Scatter(
-            x=bultos_dia["Fecha"], y=bultos_dia["Bultos"],
-            name="Bultos", mode="lines+markers",
-            line=dict(color=BIMBO_CELESTE, width=3),
-            marker=dict(size=8, color=BIMBO_CELESTE),
-            yaxis="y",
-        ))
-
-        fig_trend.add_trace(go.Scatter(
-            x=otif_dia["Fecha"], y=otif_dia["OTIF %"],
-            name="OTIF %", mode="lines+markers",
-            line=dict(color=BIMBO_GREEN, width=3),
-            marker=dict(size=8, color=BIMBO_GREEN),
-            yaxis="y2",
-        ))
-
-        fig_trend.update_layout(
-            template="plotly_white",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(255,255,255,1)",
-            font=dict(color="#1a1a2e", size=12),
-            margin=dict(l=10, r=50, t=30, b=10),
-            height=400,
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        fig_trend.update_yaxes(
-            title_text="Bultos", side="left",
-            titlefont=dict(color=BIMBO_CELESTE), tickfont=dict(color=BIMBO_CELESTE),
-            selector=dict(overlaying=None),
-        )
-        fig_trend.update_layout(
-            yaxis2=dict(
-                title="OTIF %", side="right", overlaying="y", range=[0, 100],
-                titlefont=dict(color=BIMBO_GREEN), tickfont=dict(color=BIMBO_GREEN),
+        fig_trend = go.Figure(
+            data=[
+                go.Scatter(
+                    x=bultos_dia["Fecha"], y=bultos_dia["Bultos"],
+                    name="Bultos", mode="lines+markers",
+                    line=dict(color=BIMBO_CELESTE, width=3),
+                    marker=dict(size=8, color=BIMBO_CELESTE),
+                ),
+                go.Scatter(
+                    x=otif_dia["Fecha"], y=otif_dia["OTIF %"],
+                    name="OTIF %", mode="lines+markers",
+                    line=dict(color=BIMBO_GREEN, width=3),
+                    marker=dict(size=8, color=BIMBO_GREEN),
+                    yaxis="y2",
+                ),
+            ],
+            layout=go.Layout(
+                template="plotly_white",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(255,255,255,1)",
+                font=dict(color="#1a1a2e", size=12),
+                margin=dict(l=60, r=60, t=30, b=40),
+                height=400,
+                xaxis=dict(dtick="D1", tickformat="%d/%m/%Y"),
+                yaxis=dict(title=dict(text="Bultos", font=dict(color=BIMBO_CELESTE)),
+                           tickfont=dict(color=BIMBO_CELESTE), side="left"),
+                yaxis2=dict(title=dict(text="OTIF %", font=dict(color=BIMBO_GREEN)),
+                            tickfont=dict(color=BIMBO_GREEN), side="right",
+                            overlaying="y", range=[0, 100]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             ),
         )
-        fig_trend.update_xaxes(dtick="D1", tickformat="%d/%m/%Y")
         st.plotly_chart(fig_trend, use_container_width=True)
 
         st.markdown('<div class="section-title">🏭 Entregas por Centro de Venta</div>', unsafe_allow_html=True)
