@@ -173,15 +173,18 @@ DB_PATH = "espera_historica.db"
 def init_db():
     """Inicializa SQLite para guardar histórico de esperas GPS."""
     conn = sqlite3.connect(DB_PATH)
+    # Eliminar tabla vieja con estructura incorrecta (si existe)
+    conn.execute("DROP TABLE IF EXISTS espera_snapshots")
+    # Crear tabla con estructura correcta
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS espera_snapshots (
+        CREATE TABLE IF NOT EXISTS espera_visitas (
             address_code TEXT,
             planned_date TEXT,
-            tracked_service_time REAL,
             tracked_arrival TEXT,
+            tracked_service_time REAL,
             tracked_leave TEXT,
             snapshot_at TEXT,
-            PRIMARY KEY (address_code, planned_date, tracked_service_time)
+            PRIMARY KEY (address_code, planned_date, tracked_arrival)
         )
     """)
     conn.commit()
@@ -189,24 +192,43 @@ def init_db():
 
 
 def save_espera_snapshot(records: list):
-    """Guarda snapshot de tiempos de espera, preservando todos los valores históricos."""
+    """Guarda snapshot usando tracked_arrival como ID de visita.
+    
+    Lógica:
+    - Mismo tracked_arrival = misma visita → actualiza con MAX(tracked_service_time)
+    - Diferente tracked_arrival = nueva visita → inserta nuevo registro
+    """
     conn = sqlite3.connect(DB_PATH)
     for r in records:
         tst = r.get("tracked_service_time")
-        if tst and tst > 0:
+        ta = r.get("tracked_arrival")
+        if tst and tst > 0 and ta:
             try:
-                conn.execute("""
-                    INSERT OR IGNORE INTO espera_snapshots
-                    (address_code, planned_date, tracked_service_time, tracked_arrival, tracked_leave, snapshot_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    r.get("address_code"),
-                    r.get("planned_date"),
-                    tst,
-                    r.get("tracked_arrival"),
-                    r.get("tracked_leave"),
-                    datetime.now(TZ_CHILE).isoformat(),
-                ))
+                # Verificar si ya existe esta visita
+                existing = conn.execute("""
+                    SELECT tracked_service_time FROM espera_visitas
+                    WHERE address_code = ? AND planned_date = ? AND tracked_arrival = ?
+                """, (r.get("address_code"), r.get("planned_date"), ta)).fetchone()
+
+                if existing:
+                    # Misma visita: actualizar solo si el nuevo tst es mayor
+                    if tst > existing[0]:
+                        conn.execute("""
+                            UPDATE espera_visitas
+                            SET tracked_service_time = ?, tracked_leave = ?, snapshot_at = ?
+                            WHERE address_code = ? AND planned_date = ? AND tracked_arrival = ?
+                        """, (tst, r.get("tracked_leave"),
+                              datetime.now(TZ_CHILE).isoformat(),
+                              r.get("address_code"), r.get("planned_date"), ta))
+                else:
+                    # Nueva visita (tracked_arrival distinto)
+                    conn.execute("""
+                        INSERT INTO espera_visitas
+                        (address_code, planned_date, tracked_arrival, tracked_service_time, tracked_leave, snapshot_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (r.get("address_code"), r.get("planned_date"), ta,
+                          tst, r.get("tracked_leave"),
+                          datetime.now(TZ_CHILE).isoformat()))
             except Exception:
                 pass
     conn.commit()
@@ -214,25 +236,25 @@ def save_espera_snapshot(records: list):
 
 
 def get_espera_historica(planned_dates: list) -> dict:
-    """Obtiene la suma y el máximo de todos los tracked_service_time distintos por sala+día."""
+    """Obtiene por sala+día: suma de max por visita, max individual, y cantidad de visitas."""
     conn = sqlite3.connect(DB_PATH)
     result = {}
     try:
         placeholders = ",".join(["?"] * len(planned_dates))
         rows = conn.execute(f"""
             SELECT address_code, planned_date,
-                   SUM(tracked_service_time) as sum_espera,
+                   SUM(tracked_service_time) as total_espera,
                    MAX(tracked_service_time) as max_espera,
-                   COUNT(DISTINCT tracked_service_time) as n_visitas
-            FROM espera_snapshots
+                   COUNT(*) as n_visitas
+            FROM espera_visitas
             WHERE planned_date IN ({placeholders})
             GROUP BY address_code, planned_date
         """, planned_dates).fetchall()
         for row in rows:
             result[(row[0], row[1])] = {
-                "sum": row[2],
+                "total": row[2],
                 "max": row[3],
-                "visitas_gps": row[4],
+                "visitas": row[4],
             }
     except Exception:
         pass
@@ -339,7 +361,7 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
     # Usar el mayor entre tracked_service_time y espera_calculada por fila
     df["espera_real"] = df[["tracked_service_time", "espera_calculada"]].max(axis=1)
 
-    # Consultar histórico de esperas (captura valores antes de sobreescritura API)
+    # Consultar histórico de esperas (captura visitas antes de sobreescritura API)
     try:
         planned_dates = df["planned_date"].dropna().unique().tolist()
         if planned_dates:
@@ -349,16 +371,19 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
                 h = historico.get((row["address_code"], row["planned_date"]))
                 return h[field] if h else None
 
-            df["espera_hist_sum"] = df.apply(lambda r: get_hist_field(r, "sum"), axis=1)
+            df["espera_hist_total"] = df.apply(lambda r: get_hist_field(r, "total"), axis=1)
             df["espera_hist_max"] = df.apply(lambda r: get_hist_field(r, "max"), axis=1)
-            df["visitas_gps"] = df.apply(lambda r: get_hist_field(r, "visitas_gps"), axis=1)
+            df["visitas_gps"] = df.apply(lambda r: get_hist_field(r, "visitas"), axis=1)
 
-            # Espera total = suma histórica (incluye todas las visitas capturadas)
+            # Espera total = suma de todas las visitas distintas (desde histórico)
             # Si no hay histórico, usar espera_real actual
-            df["espera_total_sala"] = df["espera_hist_sum"].combine_first(df["espera_real"])
+            df["espera_total_sala"] = df["espera_hist_total"].combine_first(df["espera_real"])
 
             # Espera máxima = la visita individual más larga
             df["espera_max_sala"] = df[["espera_real", "espera_hist_max"]].max(axis=1)
+
+            # Visitas: mínimo 1
+            df["visitas_gps"] = df["visitas_gps"].fillna(1).astype(int)
         else:
             df["espera_total_sala"] = df["espera_real"]
             df["espera_max_sala"] = df["espera_real"]
