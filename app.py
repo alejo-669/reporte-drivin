@@ -548,24 +548,27 @@ if sala_sel != "— Sin filtro —":
         espera_total_vals = df_sala["espera_total_sala"].dropna()
         max_espera_sala = int(espera_max_vals.max()) if not espera_max_vals.empty else 0
         total_espera_sala = int(espera_total_vals.max()) if not espera_total_vals.empty else 0
+        n_pasadas = int(df_sala["visitas_gps"].max()) if not df_sala["visitas_gps"].dropna().empty else 1
 
         s1.metric("Visitas", total_sala)
         s2.metric("OTD", f"{otd_sala}%")
         s3.metric("OTIF", f"{otif_pct_sala}%")
         s4.metric("Bultos", f"{bultos_sala:,}")
         s5.metric("Venta", f"${venta_sala:,}")
-        s6.metric("Espera Mayor (min)", f"{max_espera_sala}")
-        s7.metric("Espera Total (min)", f"{total_espera_sala}")
+        s6.metric("⏱️ Espera Total", f"{total_espera_sala} min")
+        s7.metric("🔄 Pasadas GPS", f"{n_pasadas}")
 
         st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
+        if n_pasadas > 1:
+            st.caption(f"⚠️ Se detectaron {n_pasadas} pasadas GPS distintas. Espera Total = suma de todas las pasadas.")
 
         df_show = df_sala[["planned_date", "driver_name", "employer_name", "vehicle_code", "tipo_viaje", "units_1",
                            "units_2", "status_display", "reason", "otif", "near_pod",
-                           "tracked_service_time", "espera_max_sala", "espera_total_sala", "visitas_gps"]].copy()
+                           "tracked_service_time", "espera_total_sala", "visitas_gps"]].copy()
         df_show.columns = ["Fecha", "Conductor", "Operador Logístico", "Vehículo", "Tipo Viaje", "Bultos",
                            "Venta Total", "Status", "Motivo", "OTIF", "Near POD",
-                           "Espera Actual (min)", "Espera Mayor (min)", "Espera Total (min)", "Pasadas GPS"]
-        for col_esp in ["Espera Actual (min)", "Espera Mayor (min)", "Espera Total (min)"]:
+                           "Espera Última (min)", "Espera Total (min)", "Pasadas GPS"]
+        for col_esp in ["Espera Última (min)", "Espera Total (min)"]:
             df_show[col_esp] = df_show[col_esp].apply(
                 lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
         df_show["Pasadas GPS"] = df_show["Pasadas GPS"].apply(
@@ -642,13 +645,13 @@ else:
 
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
                               "employer_name", "tipo_viaje", "units_1", "units_2", "status_display", "reason",
-                              "otif", "near_pod", "tracked_service_time", "espera_max_sala",
+                              "otif", "near_pod", "tracked_service_time",
                               "espera_total_sala", "visitas_gps"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
                                "Operador Logístico", "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
-                               "OTIF", "Near POD", "Espera Actual", "Espera Mayor",
+                               "OTIF", "Near POD", "Espera Última",
                                "Espera Total", "Pasadas GPS"]
-        for col_esp in ["Espera Actual", "Espera Mayor", "Espera Total"]:
+        for col_esp in ["Espera Última", "Espera Total"]:
             df_ent_show[col_esp] = df_ent_show[col_esp].apply(
                 lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
         df_ent_show["Pasadas GPS"] = df_ent_show["Pasadas GPS"].apply(
