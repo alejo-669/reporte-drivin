@@ -8,6 +8,7 @@ Auto-refresh cada 10 minutos
 
 import os
 import json
+import sqlite3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -15,6 +16,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
+from pathlib import Path
 
 # ── Zona horaria Chile ──────────────────────────────────────
 TZ_CHILE = ZoneInfo("America/Santiago")
@@ -164,6 +166,73 @@ BIMBO_GREEN = "#16a34a"
 BIMBO_RED = "#dc2626"
 
 
+# ── Snapshot system for GPS wait times ──────────────────────
+DB_PATH = "espera_historica.db"
+
+
+def init_db():
+    """Inicializa SQLite para guardar histórico de esperas GPS."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS espera_snapshots (
+            address_code TEXT,
+            planned_date TEXT,
+            tracked_service_time REAL,
+            tracked_arrival TEXT,
+            tracked_leave TEXT,
+            snapshot_at TEXT,
+            PRIMARY KEY (address_code, planned_date, tracked_service_time)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_espera_snapshot(records: list):
+    """Guarda snapshot de tiempos de espera, preservando todos los valores históricos."""
+    conn = sqlite3.connect(DB_PATH)
+    for r in records:
+        tst = r.get("tracked_service_time")
+        if tst and tst > 0:
+            try:
+                conn.execute("""
+                    INSERT OR IGNORE INTO espera_snapshots
+                    (address_code, planned_date, tracked_service_time, tracked_arrival, tracked_leave, snapshot_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    r.get("address_code"),
+                    r.get("planned_date"),
+                    tst,
+                    r.get("tracked_arrival"),
+                    r.get("tracked_leave"),
+                    datetime.now(TZ_CHILE).isoformat(),
+                ))
+            except Exception:
+                pass
+    conn.commit()
+    conn.close()
+
+
+def get_max_espera_historica(planned_dates: list) -> dict:
+    """Obtiene el máximo tracked_service_time histórico por sala+día."""
+    conn = sqlite3.connect(DB_PATH)
+    result = {}
+    try:
+        placeholders = ",".join(["?"] * len(planned_dates))
+        rows = conn.execute(f"""
+            SELECT address_code, planned_date, MAX(tracked_service_time) as max_espera
+            FROM espera_snapshots
+            WHERE planned_date IN ({placeholders})
+            GROUP BY address_code, planned_date
+        """, planned_dates).fetchall()
+        for row in rows:
+            result[(row[0], row[1])] = row[2]
+    except Exception:
+        pass
+    conn.close()
+    return result
+
+
 # ── Data Loading ────────────────────────────────────────────
 @st.cache_data(ttl=600)
 def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
@@ -190,6 +259,13 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
 
     if not records:
         return pd.DataFrame()
+
+    # Guardar snapshot de esperas GPS (preserva valores antes de sobreescritura)
+    try:
+        init_db()
+        save_espera_snapshot(records)
+    except Exception:
+        pass
 
     rows = []
     for r in records:
@@ -238,16 +314,41 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
     df["status_display"] = df["status"].apply(translate_status)
     df["tipo_viaje"] = df["trip_number"].apply(
         lambda x: "Primera vuelta" if x == 1 else ("Segunda vuelta" if x == 2 else "-"))
-    for col in ["reason", "near_pod", "client_name", "driver_name", "address_city"]:
+    for col in ["reason", "near_pod", "client_name", "driver_name", "address_city", "employer_name"]:
         if col in df.columns:
             df[col] = df[col].apply(clean_none)
 
-    # Calcular espera máxima por sala+día (corrige el problema de múltiples visitas)
-    if "tracked_service_time" in df.columns and not df.empty:
-        espera_max = df.groupby(["address_code", "planned_date"])["tracked_service_time"].transform("max")
-        df["espera_max_sala"] = espera_max
+    # Calcular tiempo de servicio propio desde tracked_arrival/leave (respaldo)
+    if "tracked_arrival" in df.columns and "tracked_leave" in df.columns:
+        df["_arrival"] = pd.to_datetime(df["tracked_arrival"], errors="coerce")
+        df["_leave"] = pd.to_datetime(df["tracked_leave"], errors="coerce")
+        df["espera_calculada"] = ((df["_leave"] - df["_arrival"]).dt.total_seconds() / 60).round(0)
+        df["espera_calculada"] = df["espera_calculada"].apply(
+            lambda x: int(x) if pd.notna(x) and x > 0 else None)
+        df.drop(columns=["_arrival", "_leave"], inplace=True)
     else:
-        df["espera_max_sala"] = None
+        df["espera_calculada"] = None
+
+    # Usar el mayor entre tracked_service_time y espera_calculada por fila
+    df["espera_real"] = df[["tracked_service_time", "espera_calculada"]].max(axis=1)
+
+    # Consultar histórico de esperas (captura valores antes de sobreescritura API)
+    try:
+        planned_dates = df["planned_date"].dropna().unique().tolist()
+        if planned_dates:
+            historico = get_max_espera_historica(planned_dates)
+            df["espera_historica"] = df.apply(
+                lambda row: historico.get((row["address_code"], row["planned_date"])), axis=1)
+            # Tomar el máximo entre: espera real actual y espera histórica guardada
+            df["espera_max_sala"] = df[["espera_real", "espera_historica"]].max(axis=1)
+        else:
+            df["espera_max_sala"] = df["espera_real"]
+    except Exception:
+        df["espera_max_sala"] = df["espera_real"]
+
+    # Además, aplicar max por sala+día por si hay múltiples filas
+    if not df.empty:
+        df["espera_max_sala"] = df.groupby(["address_code", "planned_date"])["espera_max_sala"].transform("max")
 
     return df
 
@@ -408,10 +509,10 @@ if sala_sel != "— Sin filtro —":
 
         st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
 
-        df_show = df_sala[["planned_date", "driver_name", "vehicle_code", "tipo_viaje", "units_1",
+        df_show = df_sala[["planned_date", "driver_name", "employer_name", "vehicle_code", "tipo_viaje", "units_1",
                            "units_2", "status_display", "reason", "otif", "near_pod",
                            "tracked_service_time", "espera_max_sala"]].copy()
-        df_show.columns = ["Fecha", "Conductor", "Vehículo", "Tipo Viaje", "Bultos",
+        df_show.columns = ["Fecha", "Conductor", "Operador Logístico", "Vehículo", "Tipo Viaje", "Bultos",
                            "Venta Total", "Status", "Motivo", "OTIF", "Near POD",
                            "Espera GPS (min)", "Espera Máx. Sala (min)"]
         df_show["Espera GPS (min)"] = df_show["Espera GPS (min)"].apply(
@@ -457,8 +558,8 @@ else:
         df_veh["hr_inicio"] = df_veh["route_started_at"].apply(parse_hour_chile)
         df_veh["hr_fin"] = df_veh["route_finished_at"].apply(parse_hour_chile)
 
-        df_veh_show = df_veh[["vehicle_code", "driver_name", "schema_name", "estado", "hr_inicio", "hr_fin"]].copy()
-        df_veh_show.columns = ["Vehículo", "Conductor", "Centro", "Estado", "Inicio", "Fin"]
+        df_veh_show = df_veh[["vehicle_code", "driver_name", "employer_name", "schema_name", "estado", "hr_inicio", "hr_fin"]].copy()
+        df_veh_show.columns = ["Vehículo", "Conductor", "Operador Logístico", "Centro", "Estado", "Inicio", "Fin"]
         df_veh_show = df_veh_show.fillna("-")
 
         def color_estado_light(val):
@@ -489,10 +590,10 @@ else:
             df_ent = df_ent[df_ent["reason"] == motivo_sel]
 
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
-                              "tipo_viaje", "units_1", "units_2", "status_display", "reason",
+                              "employer_name", "tipo_viaje", "units_1", "units_2", "status_display", "reason",
                               "otif", "near_pod", "tracked_service_time", "espera_max_sala"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
-                               "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
+                               "Operador Logístico", "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
                                "OTIF", "Near POD", "Espera GPS", "Espera Máx. Sala"]
         df_ent_show["Espera GPS"] = df_ent_show["Espera GPS"].apply(
             lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
