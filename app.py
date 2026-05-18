@@ -213,20 +213,27 @@ def save_espera_snapshot(records: list):
     conn.close()
 
 
-def get_max_espera_historica(planned_dates: list) -> dict:
-    """Obtiene el máximo tracked_service_time histórico por sala+día."""
+def get_espera_historica(planned_dates: list) -> dict:
+    """Obtiene la suma y el máximo de todos los tracked_service_time distintos por sala+día."""
     conn = sqlite3.connect(DB_PATH)
     result = {}
     try:
         placeholders = ",".join(["?"] * len(planned_dates))
         rows = conn.execute(f"""
-            SELECT address_code, planned_date, MAX(tracked_service_time) as max_espera
+            SELECT address_code, planned_date,
+                   SUM(tracked_service_time) as sum_espera,
+                   MAX(tracked_service_time) as max_espera,
+                   COUNT(DISTINCT tracked_service_time) as n_visitas
             FROM espera_snapshots
             WHERE planned_date IN ({placeholders})
             GROUP BY address_code, planned_date
         """, planned_dates).fetchall()
         for row in rows:
-            result[(row[0], row[1])] = row[2]
+            result[(row[0], row[1])] = {
+                "sum": row[2],
+                "max": row[3],
+                "visitas_gps": row[4],
+            }
     except Exception:
         pass
     conn.close()
@@ -336,19 +343,36 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
     try:
         planned_dates = df["planned_date"].dropna().unique().tolist()
         if planned_dates:
-            historico = get_max_espera_historica(planned_dates)
-            df["espera_historica"] = df.apply(
-                lambda row: historico.get((row["address_code"], row["planned_date"])), axis=1)
-            # Tomar el máximo entre: espera real actual y espera histórica guardada
-            df["espera_max_sala"] = df[["espera_real", "espera_historica"]].max(axis=1)
-        else:
-            df["espera_max_sala"] = df["espera_real"]
-    except Exception:
-        df["espera_max_sala"] = df["espera_real"]
+            historico = get_espera_historica(planned_dates)
 
-    # Además, aplicar max por sala+día por si hay múltiples filas
+            def get_hist_field(row, field):
+                h = historico.get((row["address_code"], row["planned_date"]))
+                return h[field] if h else None
+
+            df["espera_hist_sum"] = df.apply(lambda r: get_hist_field(r, "sum"), axis=1)
+            df["espera_hist_max"] = df.apply(lambda r: get_hist_field(r, "max"), axis=1)
+            df["visitas_gps"] = df.apply(lambda r: get_hist_field(r, "visitas_gps"), axis=1)
+
+            # Espera total = suma histórica (incluye todas las visitas capturadas)
+            # Si no hay histórico, usar espera_real actual
+            df["espera_total_sala"] = df["espera_hist_sum"].combine_first(df["espera_real"])
+
+            # Espera máxima = la visita individual más larga
+            df["espera_max_sala"] = df[["espera_real", "espera_hist_max"]].max(axis=1)
+        else:
+            df["espera_total_sala"] = df["espera_real"]
+            df["espera_max_sala"] = df["espera_real"]
+            df["visitas_gps"] = 1
+    except Exception:
+        df["espera_total_sala"] = df["espera_real"]
+        df["espera_max_sala"] = df["espera_real"]
+        df["visitas_gps"] = 1
+
+    # Aplicar max/sum por sala+día por si hay múltiples filas en el DataFrame
     if not df.empty:
         df["espera_max_sala"] = df.groupby(["address_code", "planned_date"])["espera_max_sala"].transform("max")
+        df["espera_total_sala"] = df.groupby(["address_code", "planned_date"])["espera_total_sala"].transform("max")
+        df["visitas_gps"] = df.groupby(["address_code", "planned_date"])["visitas_gps"].transform("max")
 
     return df
 
@@ -496,29 +520,31 @@ if sala_sel != "— Sin filtro —":
         bultos_sala = int(df_sala["units_1"].sum())
         venta_sala = int(df_sala["units_2"].sum())
         espera_max_vals = df_sala["espera_max_sala"].dropna()
+        espera_total_vals = df_sala["espera_total_sala"].dropna()
         max_espera_sala = int(espera_max_vals.max()) if not espera_max_vals.empty else 0
-        avg_espera_sala = round(espera_max_vals.mean(), 1) if not espera_max_vals.empty else 0
+        total_espera_sala = int(espera_total_vals.max()) if not espera_total_vals.empty else 0
 
         s1.metric("Visitas", total_sala)
         s2.metric("OTD", f"{otd_sala}%")
         s3.metric("OTIF", f"{otif_pct_sala}%")
         s4.metric("Bultos", f"{bultos_sala:,}")
         s5.metric("Venta", f"${venta_sala:,}")
-        s6.metric("Espera Máx.", f"{max_espera_sala} min")
-        s7.metric("Espera Prom.", f"{avg_espera_sala} min")
+        s6.metric("Espera Mayor (min)", f"{max_espera_sala}")
+        s7.metric("Espera Total (min)", f"{total_espera_sala}")
 
         st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
 
         df_show = df_sala[["planned_date", "driver_name", "employer_name", "vehicle_code", "tipo_viaje", "units_1",
                            "units_2", "status_display", "reason", "otif", "near_pod",
-                           "tracked_service_time", "espera_max_sala"]].copy()
+                           "tracked_service_time", "espera_max_sala", "espera_total_sala", "visitas_gps"]].copy()
         df_show.columns = ["Fecha", "Conductor", "Operador Logístico", "Vehículo", "Tipo Viaje", "Bultos",
                            "Venta Total", "Status", "Motivo", "OTIF", "Near POD",
-                           "Espera GPS (min)", "Espera Máx. Sala (min)"]
-        df_show["Espera GPS (min)"] = df_show["Espera GPS (min)"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
-        df_show["Espera Máx. Sala (min)"] = df_show["Espera Máx. Sala (min)"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+                           "Espera Actual (min)", "Espera Mayor (min)", "Espera Total (min)", "Pasadas GPS"]
+        for col_esp in ["Espera Actual (min)", "Espera Mayor (min)", "Espera Total (min)"]:
+            df_show[col_esp] = df_show[col_esp].apply(
+                lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_show["Pasadas GPS"] = df_show["Pasadas GPS"].apply(
+            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else 1)
         df_show["Venta Total"] = df_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
         df_show = df_show.fillna("-")
 
@@ -591,14 +617,17 @@ else:
 
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
                               "employer_name", "tipo_viaje", "units_1", "units_2", "status_display", "reason",
-                              "otif", "near_pod", "tracked_service_time", "espera_max_sala"]].copy()
+                              "otif", "near_pod", "tracked_service_time", "espera_max_sala",
+                              "espera_total_sala", "visitas_gps"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
                                "Operador Logístico", "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
-                               "OTIF", "Near POD", "Espera GPS", "Espera Máx. Sala"]
-        df_ent_show["Espera GPS"] = df_ent_show["Espera GPS"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
-        df_ent_show["Espera Máx. Sala"] = df_ent_show["Espera Máx. Sala"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+                               "OTIF", "Near POD", "Espera Actual", "Espera Mayor",
+                               "Espera Total", "Pasadas GPS"]
+        for col_esp in ["Espera Actual", "Espera Mayor", "Espera Total"]:
+            df_ent_show[col_esp] = df_ent_show[col_esp].apply(
+                lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
+        df_ent_show["Pasadas GPS"] = df_ent_show["Pasadas GPS"].apply(
+            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else 1)
         df_ent_show["Venta Total"] = df_ent_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
         df_ent_show = df_ent_show.fillna("-")
 
@@ -626,38 +655,40 @@ else:
 
     with tab3:
         st.markdown('<div class="section-title">🏆 Top 10 Salas con Mayor Tiempo de Espera GPS</div>', unsafe_allow_html=True)
-        st.caption("Se considera el máximo tiempo de espera por sala en el día (no el último registro)")
+        st.caption("Espera Total = suma de todas las pasadas capturadas · Espera Mayor = visita individual más larga")
 
-        df_times = df[df["espera_max_sala"].notna() & (df["espera_max_sala"] > 0)].copy()
+        df_times = df[df["espera_total_sala"].notna() & (df["espera_total_sala"] > 0)].copy()
 
         if df_times.empty:
             st.info("No hay datos de tiempo de espera GPS para este rango.")
         else:
-            # Deduplicar: una fila por sala+día con el max ya calculado
             df_sala_dia = df_times.drop_duplicates(subset=["address_code", "planned_date"])[
-                ["address_code", "address_name", "planned_date", "espera_max_sala"]
+                ["address_code", "address_name", "planned_date", "espera_max_sala",
+                 "espera_total_sala", "visitas_gps"]
             ]
             sala_agg = df_sala_dia.groupby(["address_code", "address_name"]).agg(
-                max_espera=("espera_max_sala", "max"),
-                avg_espera=("espera_max_sala", "mean"),
-                visitas=("espera_max_sala", "count"),
-            ).reset_index().sort_values("max_espera", ascending=False).head(10)
-            sala_agg["avg_espera"] = sala_agg["avg_espera"].round(1)
-            sala_agg["max_espera"] = sala_agg["max_espera"].astype(int)
+                espera_total=("espera_total_sala", "max"),
+                espera_mayor=("espera_max_sala", "max"),
+                pasadas=("visitas_gps", "max"),
+                dias=("planned_date", "count"),
+            ).reset_index().sort_values("espera_total", ascending=False).head(10)
+            sala_agg["espera_total"] = sala_agg["espera_total"].astype(int)
+            sala_agg["espera_mayor"] = sala_agg["espera_mayor"].astype(int)
+            sala_agg["pasadas"] = sala_agg["pasadas"].astype(int)
 
             fig_top = px.bar(
-                sala_agg, x="max_espera", y="address_name", orientation="h",
-                text="max_espera", color="max_espera",
+                sala_agg, x="espera_total", y="address_name", orientation="h",
+                text="espera_total", color="espera_total",
                 color_continuous_scale=[[0, BIMBO_CELESTE], [0.5, BIMBO_BLUE], [1, BIMBO_RED]],
-                labels={"max_espera": "Max Espera (min)", "address_name": "Sala"},
+                labels={"espera_total": "Espera Total (min)", "address_name": "Sala"},
             )
             fig_top.update_layout(**PLOTLY_LAYOUT, height=420, showlegend=False, yaxis=dict(autorange="reversed"))
             fig_top.update_traces(textposition="outside")
             fig_top.update_coloraxes(showscale=False)
             st.plotly_chart(fig_top, use_container_width=True)
 
-            sala_show = sala_agg[["address_code", "address_name", "max_espera", "avg_espera", "visitas"]].copy()
-            sala_show.columns = ["Código", "Sala", "Max Espera (min)", "Prom Espera (min)", "Visitas"]
+            sala_show = sala_agg[["address_code", "address_name", "espera_total", "espera_mayor", "pasadas"]].copy()
+            sala_show.columns = ["Código", "Sala", "Espera Total (min)", "Espera Mayor (min)", "Pasadas GPS"]
             st.dataframe(sala_show, use_container_width=True, hide_index=True)
 
     with tab4:
