@@ -263,6 +263,38 @@ def get_espera_historica(planned_dates: list) -> dict:
 
 
 # ── Data Loading ────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def load_vehicle_fletes() -> dict:
+    """Carga los fletes (capacity_3/KG) desde el endpoint de vehículos de Drivin."""
+    import requests
+
+    api_key = os.environ.get("DRIVIN_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets["DRIVIN_API_KEY"]
+        except Exception:
+            return {}
+
+    url = "https://external.driv.in/api/external/v2/vehicles"
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        vehicles = resp.json().get("response", [])
+    except Exception:
+        return {}
+
+    # Mapeo: vehicle_code → flete (capacity_3 = KG = costo flete fijo)
+    fletes = {}
+    for v in vehicles:
+        code = v.get("code", "")
+        cap3 = v.get("capacity_3", 0) or 0
+        if code and cap3 > 0:
+            fletes[code] = int(cap3)
+    return fletes
+
+
 @st.cache_data(ttl=600)
 def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
     import requests
@@ -801,9 +833,15 @@ else:
     # ── TAB 5: CxS por Camión ─────────────────────────────
     with tab5:
         st.markdown('<div class="section-title">💰 Costo por Servir (CxS) por Camión</div>', unsafe_allow_html=True)
-        st.caption("CxS = Flete / Venta · Cada vuelta se muestra por separado para evaluar rentabilidad")
+        st.caption("CxS = Flete / Venta · Flete obtenido de Drivin (campo KG en capacidades del vehículo)")
+
+        # Cargar fletes desde endpoint de vehículos
+        fletes = load_vehicle_fletes()
 
         df_cxs = df.copy()
+
+        # Agregar flete por vehículo
+        df_cxs["flete"] = df_cxs["vehicle_code"].map(fletes).fillna(0).astype(int)
 
         # Agrupar por vehículo + vuelta (cada vuelta es una fila)
         vuelta_agg = df_cxs.groupby(["vehicle_code", "trip_number"]).agg(
@@ -813,14 +851,14 @@ else:
             salas=("address_code", "nunique"),
             bultos=("units_1", "sum"),
             venta=("units_2", "sum"),
-            flete=("units_3", "max"),  # Flete fijo por camión (mismo en todas las salas)
+            flete=("flete", "max"),
         ).reset_index()
 
         # Tipo de viaje
         vuelta_agg["tipo_viaje"] = vuelta_agg["trip_number"].apply(
             lambda x: "Primera vuelta" if x == 1 else "Segunda vuelta")
 
-        # CxS por vuelta: cada vuelta tiene su propio flete
+        # CxS por vuelta
         vuelta_agg["cxs_pct"] = vuelta_agg.apply(
             lambda r: round(r["flete"] / r["venta"] * 100, 2) if r["venta"] > 0 else 0,
             axis=1,
@@ -836,6 +874,7 @@ else:
         total_camiones = vuelta_agg["vehicle_code"].nunique()
         total_vueltas = len(vuelta_agg)
         vueltas_2da = (vuelta_agg["trip_number"] == 2).sum()
+        sin_flete = (vuelta_agg["flete"] == 0).sum()
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("💰 CxS Global", f"{cxs_global}%")
@@ -844,9 +883,15 @@ else:
         c4.metric("⚠️ 2das Vueltas", int(vueltas_2da))
         c5.metric("📦 Flete Total", f"${total_flete:,}")
 
+        if sin_flete > 0:
+            st.markdown(
+                f'<div class="alerta-box">⚠️ {sin_flete} viaje(s) sin flete configurado en Drivin (campo KG = 0)</div>',
+                unsafe_allow_html=True,
+            )
+
         st.divider()
 
-        # Tabla principal: una fila por vuelta
+        # Tabla principal: una fila por vuelta, TODOS los camiones
         st.markdown('<div class="section-title">📋 CxS por Camión y Vuelta (mayor a menor)</div>', unsafe_allow_html=True)
 
         veh_show = vuelta_agg[[
@@ -856,13 +901,12 @@ else:
         ]].copy()
         veh_show["bultos"] = veh_show["bultos"].astype(int)
         veh_show["venta"] = veh_show["venta"].apply(lambda x: f"${int(x):,}")
-        veh_show["flete"] = veh_show["flete"].apply(lambda x: f"${int(x):,}")
-        veh_show["cxs_num"] = vuelta_agg["cxs_pct"].values  # Para ordenar
-        veh_show["cxs_pct"] = veh_show["cxs_num"].apply(lambda x: f"{x}%")
+        veh_show["flete"] = veh_show["flete"].apply(lambda x: f"${int(x):,}" if x > 0 else "Sin flete")
+        veh_show["cxs_pct"] = veh_show["cxs_pct"].apply(lambda x: f"{x}%")
         veh_show.columns = [
             "Vehículo", "Conductor", "Operador", "Centro",
             "Vuelta", "Salas", "Bultos", "Venta",
-            "Flete", "CxS %", "_cxs_num"
+            "Flete", "CxS %"
         ]
 
         def color_vuelta(val):
@@ -883,10 +927,8 @@ else:
                 pass
             return ""
 
-        display_df = veh_show.drop(columns=["_cxs_num"])
-
         st.dataframe(
-            display_df.style
+            veh_show.style
                 .map(color_vuelta, subset=["Vuelta"])
                 .map(color_cxs, subset=["CxS %"]),
             use_container_width=True,
@@ -912,7 +954,8 @@ else:
                 venta=("venta", "sum"),
                 flete=("flete", "sum"),
             ).reset_index()
-            op_agg["cxs"] = (op_agg["flete"] / op_agg["venta"] * 100).round(2)
+            op_agg["cxs"] = op_agg.apply(
+                lambda r: round(r["flete"] / r["venta"] * 100, 2) if r["venta"] > 0 else 0, axis=1)
             op_agg["venta"] = op_agg["venta"].apply(lambda x: f"${int(x):,}")
             op_agg["flete"] = op_agg["flete"].apply(lambda x: f"${int(x):,}")
             op_agg["cxs"] = op_agg["cxs"].apply(lambda x: f"{x}%")
