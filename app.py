@@ -351,6 +351,7 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
             "visit_leave": r.get("visit_leave"),
             "trip_number": r.get("trip_number"),
             "route_code": r.get("route_code"),
+            "eta": r.get("eta"),
             "time_window_start": (r.get("time_window") or {}).get("start"),
             "time_window_end": (r.get("time_window") or {}).get("end"),
         }
@@ -462,6 +463,57 @@ def color_tipo_viaje(val):
     if val == "Segunda vuelta":
         return "background-color: #fef9c3; color: #854d0e"
     return ""
+
+
+def calcular_ubicacion_vehiculos(df_full: pd.DataFrame) -> dict:
+    """Calcula la ubicación actual de cada vehículo basándose en el estado de las entregas.
+
+    Retorna dict: vehicle_code → mensaje de ubicación
+    """
+    ubicaciones = {}
+
+    for vehicle, group in df_full.groupby("vehicle_code"):
+        row0 = group.iloc[0]
+        is_started = row0["route_is_started"]
+        is_finished = row0["route_is_finished"]
+
+        # 1. Si no ha iniciado
+        if not is_started and not is_finished:
+            ubicaciones[vehicle] = "🔴 Sin iniciar ruta"
+            continue
+
+        # 2. Si ya terminó
+        if is_finished:
+            ubicaciones[vehicle] = "✅ Ruta finalizada"
+            continue
+
+        # 3. En ruta — determinar dónde está
+        # Buscar sala donde está ahora (tiene arrival pero no leave)
+        en_sala = group[
+            group["tracked_arrival"].notna() & group["tracked_leave"].isna()
+        ]
+        if not en_sala.empty:
+            sala = en_sala.iloc[0]
+            ubicaciones[vehicle] = f"📍 En sala {sala['address_code']}"
+            continue
+
+        # 4. Buscar próxima sala (sin arrival, ordenada por ETA)
+        pendientes = group[group["tracked_arrival"].isna()].copy()
+        if not pendientes.empty:
+            # Ordenar por ETA para encontrar la próxima
+            pendientes["_eta_sort"] = pd.to_datetime(
+                pendientes["planned_date"] + " " + pendientes["eta"].fillna("23:59"),
+                errors="coerce"
+            )
+            pendientes = pendientes.sort_values("_eta_sort")
+            prox = pendientes.iloc[0]
+            ubicaciones[vehicle] = f"🚛 En ruta hacia sala {prox['address_code']}"
+            continue
+
+        # 5. Todas las salas visitadas pero ruta no marcada como finalizada
+        ubicaciones[vehicle] = "🚛 En ruta (todas las salas visitadas)"
+
+    return ubicaciones
 
 
 # ── Header ──────────────────────────────────────────────────
@@ -637,17 +689,22 @@ else:
 
     with tab1:
         st.markdown('<div class="section-title">🚗 Estado de sesión por vehículo</div>', unsafe_allow_html=True)
+
+        # Calcular ubicación actual de cada vehículo
+        ubicaciones = calcular_ubicacion_vehiculos(df)
+
         df_veh = df.drop_duplicates(subset=["vehicle_code"]).copy()
         df_veh["estado"] = df_veh.apply(
             lambda r: "Finalizada" if r["route_is_finished"]
             else ("En ruta" if r["route_is_started"] else "Sin iniciar"),
             axis=1,
         )
+        df_veh["ubicacion"] = df_veh["vehicle_code"].map(ubicaciones).fillna("-")
         df_veh["hr_inicio"] = df_veh["route_started_at"].apply(parse_hour_chile)
         df_veh["hr_fin"] = df_veh["route_finished_at"].apply(parse_hour_chile)
 
-        df_veh_show = df_veh[["vehicle_code", "driver_name", "employer_name", "schema_name", "estado", "hr_inicio", "hr_fin"]].copy()
-        df_veh_show.columns = ["Vehículo", "Conductor", "Operador Logístico", "Centro", "Estado", "Inicio", "Fin"]
+        df_veh_show = df_veh[["vehicle_code", "driver_name", "employer_name", "schema_name", "estado", "ubicacion", "hr_inicio", "hr_fin"]].copy()
+        df_veh_show.columns = ["Vehículo", "Conductor", "Operador Logístico", "Centro", "Estado", "Ubicación Actual", "Inicio", "Fin"]
         df_veh_show = df_veh_show.fillna("-")
 
         def color_estado_light(val):
@@ -659,8 +716,21 @@ else:
                 return "background-color: #fee2e2; color: #991b1b"
             return ""
 
+        def color_ubicacion(val):
+            if "Sin iniciar" in str(val):
+                return "background-color: #fee2e2; color: #991b1b"
+            elif "En sala" in str(val):
+                return "background-color: #fef9c3; color: #854d0e"
+            elif "En ruta" in str(val):
+                return "background-color: #dbeafe; color: #1e40af"
+            elif "finalizada" in str(val).lower():
+                return "background-color: #dcfce7; color: #166534"
+            return ""
+
         st.dataframe(
-            df_veh_show.sort_values("Estado").style.map(color_estado_light, subset=["Estado"]),
+            df_veh_show.sort_values("Estado")
+                .style.map(color_estado_light, subset=["Estado"])
+                .map(color_ubicacion, subset=["Ubicación Actual"]),
             use_container_width=True,
             hide_index=True,
             height=500,
@@ -677,12 +747,19 @@ else:
         if motivo_sel != "Todos":
             df_ent = df_ent[df_ent["reason"] == motivo_sel]
 
+        # Agregar ubicación del vehículo
+        if not hasattr(st.session_state, '_ubicaciones_cache'):
+            ubicaciones = calcular_ubicacion_vehiculos(df)
+        df_ent["ubicacion"] = df_ent["vehicle_code"].map(ubicaciones).fillna("-")
+
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
-                              "employer_name", "tipo_viaje", "units_1", "units_2", "status_display", "reason",
+                              "employer_name", "ubicacion", "tipo_viaje", "units_1", "units_2",
+                              "status_display", "reason",
                               "otif", "near_pod", "tracked_service_time",
                               "espera_total_sala", "visitas_gps"]].copy()
         df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
-                               "Operador Logístico", "Tipo Viaje", "Bultos", "Venta Total", "Status", "Motivo",
+                               "Operador Logístico", "Ubicación Actual", "Tipo Viaje",
+                               "Bultos", "Venta Total", "Status", "Motivo",
                                "OTIF", "Near POD", "Espera Última",
                                "Espera Total", "Pasadas GPS"]
         for col_esp in ["Espera Última", "Espera Total"]:
@@ -695,7 +772,8 @@ else:
 
         st.dataframe(
             df_ent_show.style.map(color_status_light, subset=["Status"])
-                             .map(color_tipo_viaje, subset=["Tipo Viaje"]),
+                             .map(color_tipo_viaje, subset=["Tipo Viaje"])
+                             .map(color_ubicacion, subset=["Ubicación Actual"]),
             use_container_width=True,
             hide_index=True,
             height=500,
