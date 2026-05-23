@@ -332,6 +332,7 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
                 "near_pod": o.get("near_pod"),
                 "units_1": o.get("units_1") or 0,
                 "units_2": o.get("units_2") or 0,
+                "units_3": o.get("units_3") or 0,
                 "client_name": o.get("client_name"),
                 "tags": json.dumps(o.get("tags", [])),
                 "pod_arrival": o.get("pod_arrival"),
@@ -340,6 +341,7 @@ def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df["units_1"] = df["units_1"].apply(format_bultos)
     df["units_2"] = df["units_2"].apply(lambda x: int(float(x)) if pd.notna(x) and x != 0 else 0)
+    df["units_3"] = df["units_3"].apply(lambda x: int(float(x)) if pd.notna(x) and x != 0 else 0)
     df["status_display"] = df["status"].apply(translate_status)
     df["tipo_viaje"] = df["trip_number"].apply(
         lambda x: "Primera vuelta" if x == 1 else ("Segunda vuelta" if x == 2 else "-"))
@@ -597,8 +599,8 @@ if sala_sel != "— Sin filtro —":
             st.plotly_chart(fig, use_container_width=True)
 
 else:
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🚗 Vehículos", "📦 Status Entregas", "🏆 Ranking Salas", "📈 Tendencias"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🚗 Vehículos", "📦 Status Entregas", "🏆 Ranking Salas", "📈 Tendencias", "💰 CxS por Camión"
     ])
 
     with tab1:
@@ -795,6 +797,127 @@ else:
         ent_cv = ent_cv[["schema_name", "entregas", "otd_pct", "otif_pct", "bultos", "venta"]]
         ent_cv.columns = ["Centro", "Entregas", "OTD %", "OTIF %", "Bultos", "Venta Total"]
         st.dataframe(ent_cv, use_container_width=True, hide_index=True)
+
+    # ── TAB 5: CxS por Camión ─────────────────────────────
+    with tab5:
+        st.markdown('<div class="section-title">💰 Costo por Servir (CxS) por Camión</div>', unsafe_allow_html=True)
+        st.caption("CxS = Flete / Venta · Cada vuelta se muestra por separado para evaluar rentabilidad")
+
+        df_cxs = df.copy()
+
+        # Agrupar por vehículo + vuelta (cada vuelta es una fila)
+        vuelta_agg = df_cxs.groupby(["vehicle_code", "trip_number"]).agg(
+            conductor=("driver_name", "first"),
+            operador=("employer_name", "first"),
+            centro=("schema_name", "first"),
+            salas=("address_code", "nunique"),
+            bultos=("units_1", "sum"),
+            venta=("units_2", "sum"),
+            flete=("units_3", "max"),  # Flete fijo por camión (mismo en todas las salas)
+        ).reset_index()
+
+        # Tipo de viaje
+        vuelta_agg["tipo_viaje"] = vuelta_agg["trip_number"].apply(
+            lambda x: "Primera vuelta" if x == 1 else "Segunda vuelta")
+
+        # CxS por vuelta: cada vuelta tiene su propio flete
+        vuelta_agg["cxs_pct"] = vuelta_agg.apply(
+            lambda r: round(r["flete"] / r["venta"] * 100, 2) if r["venta"] > 0 else 0,
+            axis=1,
+        )
+
+        # Ordenar de mayor a menor CxS
+        vuelta_agg = vuelta_agg.sort_values("cxs_pct", ascending=False)
+
+        # KPIs generales
+        total_flete = int(vuelta_agg["flete"].sum())
+        total_venta_cxs = int(vuelta_agg["venta"].sum())
+        cxs_global = round(total_flete / total_venta_cxs * 100, 2) if total_venta_cxs > 0 else 0
+        total_camiones = vuelta_agg["vehicle_code"].nunique()
+        total_vueltas = len(vuelta_agg)
+        vueltas_2da = (vuelta_agg["trip_number"] == 2).sum()
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("💰 CxS Global", f"{cxs_global}%")
+        c2.metric("🚛 Camiones", total_camiones)
+        c3.metric("🔄 Total Viajes", total_vueltas)
+        c4.metric("⚠️ 2das Vueltas", int(vueltas_2da))
+        c5.metric("📦 Flete Total", f"${total_flete:,}")
+
+        st.divider()
+
+        # Tabla principal: una fila por vuelta
+        st.markdown('<div class="section-title">📋 CxS por Camión y Vuelta (mayor a menor)</div>', unsafe_allow_html=True)
+
+        veh_show = vuelta_agg[[
+            "vehicle_code", "conductor", "operador", "centro",
+            "tipo_viaje", "salas", "bultos", "venta",
+            "flete", "cxs_pct"
+        ]].copy()
+        veh_show["bultos"] = veh_show["bultos"].astype(int)
+        veh_show["venta"] = veh_show["venta"].apply(lambda x: f"${int(x):,}")
+        veh_show["flete"] = veh_show["flete"].apply(lambda x: f"${int(x):,}")
+        veh_show["cxs_num"] = vuelta_agg["cxs_pct"].values  # Para ordenar
+        veh_show["cxs_pct"] = veh_show["cxs_num"].apply(lambda x: f"{x}%")
+        veh_show.columns = [
+            "Vehículo", "Conductor", "Operador", "Centro",
+            "Vuelta", "Salas", "Bultos", "Venta",
+            "Flete", "CxS %", "_cxs_num"
+        ]
+
+        def color_vuelta(val):
+            if val == "Segunda vuelta":
+                return "background-color: #fef9c3; color: #854d0e"
+            return ""
+
+        def color_cxs(val):
+            try:
+                num = float(str(val).replace("%", ""))
+                if num > 10:
+                    return "background-color: #fee2e2; color: #991b1b"
+                elif num > 5:
+                    return "background-color: #fef9c3; color: #854d0e"
+                elif num > 0:
+                    return "background-color: #dcfce7; color: #166534"
+            except Exception:
+                pass
+            return ""
+
+        display_df = veh_show.drop(columns=["_cxs_num"])
+
+        st.dataframe(
+            display_df.style
+                .map(color_vuelta, subset=["Vuelta"])
+                .map(color_cxs, subset=["CxS %"]),
+            use_container_width=True,
+            hide_index=True,
+            height=600,
+        )
+
+        # Resumen al final
+        st.divider()
+        st.markdown('<div class="section-title">📊 Resumen CxS del Día</div>', unsafe_allow_html=True)
+
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Venta Total", f"${total_venta_cxs:,}")
+        col_r2.metric("Flete Total", f"${total_flete:,}")
+        col_r3.metric("CxS Total del Día", f"{cxs_global}%")
+
+        # Resumen por operador
+        if not vuelta_agg.empty:
+            st.markdown('<div class="section-title">🏭 CxS por Operador Logístico</div>', unsafe_allow_html=True)
+            op_agg = vuelta_agg.groupby("operador").agg(
+                camiones=("vehicle_code", "nunique"),
+                viajes=("vehicle_code", "count"),
+                venta=("venta", "sum"),
+                flete=("flete", "sum"),
+            ).reset_index()
+            op_agg["cxs"] = (op_agg["flete"] / op_agg["venta"] * 100).round(2)
+            op_agg["venta"] = op_agg["venta"].apply(lambda x: f"${int(x):,}")
+            op_agg["flete"] = op_agg["flete"].apply(lambda x: f"${int(x):,}")
+            op_agg["cxs"] = op_agg["cxs"].apply(lambda x: f"{x}%")
+            op_agg.columns = ["Operador", "Camiones", "Viajes", "Venta", "Flete", "CxS %"]
+            st.dataframe(op_agg, use_container_width=True, hide_index=True)
 
 
 # ── Footer ──────────────────────────────────────────────────
