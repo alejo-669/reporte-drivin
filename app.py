@@ -465,6 +465,19 @@ def color_tipo_viaje(val):
     return ""
 
 
+def color_ubicacion(val):
+    val_str = str(val)
+    if "Sin iniciar" in val_str:
+        return "background-color: #fee2e2; color: #991b1b"
+    elif "En sala" in val_str:
+        return "background-color: #fef9c3; color: #854d0e"
+    elif "En ruta" in val_str or "Pendiente" in val_str:
+        return "background-color: #dbeafe; color: #1e40af"
+    elif "finalizada" in val_str.lower() or "Entregada" in val_str:
+        return "background-color: #dcfce7; color: #166534"
+    return ""
+
+
 def calcular_ubicacion_vehiculos(df_full: pd.DataFrame) -> dict:
     """Calcula la ubicación actual de cada vehículo basándose en el estado de las entregas.
 
@@ -488,7 +501,18 @@ def calcular_ubicacion_vehiculos(df_full: pd.DataFrame) -> dict:
             continue
 
         # 3. En ruta — determinar dónde está
-        # Buscar sala donde está ahora (tiene arrival pero no leave)
+        # Buscar sala donde está ahora: tiene tracked_service_time > 0 y status pendiente
+        en_sala_tst = group[
+            (group["tracked_service_time"].notna()) &
+            (group["tracked_service_time"] > 0) &
+            (group["status"].isin(["pending", None, ""]) | group["status_display"].eq("Pendiente"))
+        ]
+        if not en_sala_tst.empty:
+            sala = en_sala_tst.iloc[0]
+            ubicaciones[vehicle] = f"📍 En sala {sala['address_code']}"
+            continue
+
+        # También verificar: tiene arrival pero no leave
         en_sala = group[
             group["tracked_arrival"].notna() & group["tracked_leave"].isna()
         ]
@@ -514,6 +538,52 @@ def calcular_ubicacion_vehiculos(df_full: pd.DataFrame) -> dict:
         ubicaciones[vehicle] = "🚛 En ruta (todas las salas visitadas)"
 
     return ubicaciones
+
+
+def calcular_ubicacion_por_sala(df_full: pd.DataFrame) -> pd.Series:
+    """Calcula la ubicación/estado por cada fila (sala) del DataFrame.
+
+    Lógica de prioridad:
+    1. Ruta no iniciada → Sin iniciar
+    2. tracked_service_time > 0 y status pendiente → Camión EN esa sala
+    3. tracked_arrival sin tracked_leave → Camión EN esa sala
+    4. tracked_arrival + tracked_leave → Ya visitada / Entregada
+    5. tracked_service_time > 0 y status != pendiente → Ya visitada
+    6. Ruta finalizada sin visita → Ruta finalizada
+    7. Ruta en curso, sin datos de visita → Pendiente
+    """
+    def estado_fila(row):
+        # Si la ruta no ha iniciado
+        if not row["route_is_started"] and not row["route_is_finished"]:
+            return "🔴 Sin iniciar ruta"
+
+        has_arrival = pd.notna(row.get("tracked_arrival"))
+        has_leave = pd.notna(row.get("tracked_leave"))
+        tst = row.get("tracked_service_time")
+        has_tst = pd.notna(tst) and tst > 0
+        status = str(row.get("status", "")).lower()
+        status_display = str(row.get("status_display", ""))
+
+        # Si tiene tiempo de servicio GPS > 0 y status pendiente → está en la sala ahora
+        if has_tst and status in ("pending", "") or (has_tst and status_display == "Pendiente"):
+            return f"📍 En sala {row['address_code']}"
+
+        # Si tiene arrival pero no leave → está en la sala ahora
+        if has_arrival and not has_leave:
+            return f"📍 En sala {row['address_code']}"
+
+        # Si tiene arrival y leave, o tiene tst con status completado → ya visitada
+        if (has_arrival and has_leave) or (has_tst and status in ("approved", "rejected", "partial")):
+            return "✅ Entregada"
+
+        # Si la ruta ya finalizó
+        if row["route_is_finished"]:
+            return "✅ Ruta finalizada"
+
+        # Ruta en curso, sala sin datos de visita → pendiente
+        return "🚛 Pendiente"
+
+    return df_full.apply(estado_fila, axis=1)
 
 
 # ── Header ──────────────────────────────────────────────────
@@ -716,17 +786,6 @@ else:
                 return "background-color: #fee2e2; color: #991b1b"
             return ""
 
-        def color_ubicacion(val):
-            if "Sin iniciar" in str(val):
-                return "background-color: #fee2e2; color: #991b1b"
-            elif "En sala" in str(val):
-                return "background-color: #fef9c3; color: #854d0e"
-            elif "En ruta" in str(val):
-                return "background-color: #dbeafe; color: #1e40af"
-            elif "finalizada" in str(val).lower():
-                return "background-color: #dcfce7; color: #166534"
-            return ""
-
         st.dataframe(
             df_veh_show.sort_values("Estado")
                 .style.map(color_estado_light, subset=["Estado"])
@@ -747,10 +806,8 @@ else:
         if motivo_sel != "Todos":
             df_ent = df_ent[df_ent["reason"] == motivo_sel]
 
-        # Agregar ubicación del vehículo
-        if not hasattr(st.session_state, '_ubicaciones_cache'):
-            ubicaciones = calcular_ubicacion_vehiculos(df)
-        df_ent["ubicacion"] = df_ent["vehicle_code"].map(ubicaciones).fillna("-")
+        # Agregar ubicación por sala (no por vehículo)
+        df_ent["ubicacion"] = calcular_ubicacion_por_sala(df_ent)
 
         df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
                               "employer_name", "ubicacion", "tipo_viaje", "units_1", "units_2",
