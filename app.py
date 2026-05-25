@@ -471,8 +471,10 @@ def color_ubicacion(val):
         return "background-color: #fee2e2; color: #991b1b"
     elif "En sala" in val_str:
         return "background-color: #fef9c3; color: #854d0e"
-    elif "En ruta" in val_str or "Pendiente" in val_str:
+    elif "Pendiente" in val_str:
         return "background-color: #dbeafe; color: #1e40af"
+    elif "Visitada" in val_str:
+        return "background-color: #e0e7ff; color: #3730a3"
     elif "finalizada" in val_str.lower() or "Entregada" in val_str:
         return "background-color: #dcfce7; color: #166534"
     return ""
@@ -545,42 +547,59 @@ def calcular_ubicacion_por_sala(df_full: pd.DataFrame) -> pd.Series:
 
     Lógica de prioridad:
     1. Ruta no iniciada → Sin iniciar
-    2. tracked_service_time > 0 y status pendiente → Camión EN esa sala
-    3. tracked_arrival sin tracked_leave → Camión EN esa sala
-    4. tracked_arrival + tracked_leave → Ya visitada / Entregada
-    5. tracked_service_time > 0 y status != pendiente → Ya visitada
-    6. Ruta finalizada sin visita → Ruta finalizada
-    7. Ruta en curso, sin datos de visita → Pendiente
+    2. Status completado (approved/rejected/partial) O tiene motivo → Entregada
+    3. tracked_service_time > 0 y status pendiente → candidata a "En sala"
+       (solo la sala con mayor tracked_service_time sin status es la actual)
+    4. Sin datos → Pendiente
     """
+    # Primero identificar la sala ACTUAL por vehículo:
+    # Es la que tiene tracked_service_time > 0, status pendiente, y el TST más alto
+    sala_actual = {}
+    for vehicle, group in df_full.groupby("vehicle_code"):
+        if not group.iloc[0]["route_is_started"] or group.iloc[0]["route_is_finished"]:
+            continue
+        # Candidatas: tienen tst > 0 y no tienen status definitivo
+        candidatas = group[
+            (group["tracked_service_time"].notna()) &
+            (group["tracked_service_time"] > 0) &
+            (~group["status"].isin(["approved", "rejected", "partial"]))
+        ]
+        if not candidatas.empty:
+            # La que tiene el mayor tracked_service_time es donde está ahora
+            # (la API actualiza el tst de la sala actual en tiempo real)
+            idx_max = candidatas["tracked_service_time"].idxmax()
+            sala_actual[vehicle] = idx_max
+
     def estado_fila(row):
+        idx = row.name
+
         # Si la ruta no ha iniciado
         if not row["route_is_started"] and not row["route_is_finished"]:
             return "🔴 Sin iniciar ruta"
 
-        has_arrival = pd.notna(row.get("tracked_arrival"))
-        has_leave = pd.notna(row.get("tracked_leave"))
-        tst = row.get("tracked_service_time")
-        has_tst = pd.notna(tst) and tst > 0
+        # Si tiene status definitivo (approved, rejected, partial) o motivo → ya entregada
         status = str(row.get("status", "")).lower()
-        status_display = str(row.get("status_display", ""))
-
-        # Si tiene tiempo de servicio GPS > 0 y status pendiente → está en la sala ahora
-        if has_tst and status in ("pending", "") or (has_tst and status_display == "Pendiente"):
-            return f"📍 En sala {row['address_code']}"
-
-        # Si tiene arrival pero no leave → está en la sala ahora
-        if has_arrival and not has_leave:
-            return f"📍 En sala {row['address_code']}"
-
-        # Si tiene arrival y leave, o tiene tst con status completado → ya visitada
-        if (has_arrival and has_leave) or (has_tst and status in ("approved", "rejected", "partial")):
+        reason = str(row.get("reason", ""))
+        if status in ("approved", "rejected", "partial") or (reason not in ("-", "", "nan", "None") and pd.notna(row.get("reason"))):
             return "✅ Entregada"
 
-        # Si la ruta ya finalizó
+        # Si la ruta ya finalizó y no tiene status
         if row["route_is_finished"]:
             return "✅ Ruta finalizada"
 
-        # Ruta en curso, sala sin datos de visita → pendiente
+        # Ruta en curso, sin status definitivo
+        vehicle = row["vehicle_code"]
+
+        # ¿Es la sala actual de este vehículo?
+        if vehicle in sala_actual and sala_actual[vehicle] == idx:
+            return f"📍 En sala {row['address_code']}"
+
+        # Tiene tst > 0 pero no es la actual → ya fue visitada (el camión ya se fue)
+        tst = row.get("tracked_service_time")
+        if pd.notna(tst) and tst > 0:
+            return "🔵 Visitada (sin status)"
+
+        # Sin datos de visita → pendiente
         return "🚛 Pendiente"
 
     return df_full.apply(estado_fila, axis=1)
