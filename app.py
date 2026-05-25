@@ -264,8 +264,8 @@ def get_espera_historica(planned_dates: list) -> dict:
 
 # ── Data Loading ────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def load_vehicle_fletes() -> dict:
-    """Carga los fletes (capacity_3/KG) desde el endpoint de vehículos de Drivin."""
+def load_vehicle_fletes() -> tuple:
+    """Carga los fletes (capacity_3/KG) y capacidades (capacity_1/Bandejas) desde Drivin."""
     import requests
 
     api_key = os.environ.get("DRIVIN_API_KEY", "")
@@ -273,7 +273,7 @@ def load_vehicle_fletes() -> dict:
         try:
             api_key = st.secrets["DRIVIN_API_KEY"]
         except Exception:
-            return {}
+            return {}, {}
 
     url = "https://external.driv.in/api/external/v2/vehicles"
     headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
@@ -283,16 +283,20 @@ def load_vehicle_fletes() -> dict:
         resp.raise_for_status()
         vehicles = resp.json().get("response", [])
     except Exception:
-        return {}
+        return {}, {}
 
-    # Mapeo: vehicle_code → flete (capacity_3 = KG = costo flete fijo)
     fletes = {}
+    capacidades = {}
     for v in vehicles:
         code = v.get("code", "")
+        cap1 = v.get("capacity_1", 0) or 0
         cap3 = v.get("capacity_3", 0) or 0
-        if code and cap3 > 0:
-            fletes[code] = int(cap3)
-    return fletes
+        if code:
+            if cap3 > 0:
+                fletes[code] = int(cap3)
+            if cap1 > 0:
+                capacidades[code] = int(cap1)
+    return fletes, capacidades
 
 
 @st.cache_data(ttl=600)
@@ -989,13 +993,14 @@ else:
         st.markdown('<div class="section-title">💰 Costo por Servir (CxS) por Camión</div>', unsafe_allow_html=True)
         st.caption("CxS = Flete / Venta · Flete obtenido de Drivin (campo KG en capacidades del vehículo)")
 
-        # Cargar fletes desde endpoint de vehículos
-        fletes = load_vehicle_fletes()
+        # Cargar fletes y capacidades desde endpoint de vehículos
+        fletes, capacidades = load_vehicle_fletes()
 
         df_cxs = df.copy()
 
-        # Agregar flete por vehículo
+        # Agregar flete y capacidad por vehículo
         df_cxs["flete"] = df_cxs["vehicle_code"].map(fletes).fillna(0).astype(int)
+        df_cxs["capacidad"] = df_cxs["vehicle_code"].map(capacidades).fillna(0).astype(int)
 
         # Agrupar por vehículo + vuelta (cada vuelta es una fila)
         vuelta_agg = df_cxs.groupby(["vehicle_code", "trip_number"]).agg(
@@ -1006,11 +1011,18 @@ else:
             bultos=("units_1", "sum"),
             venta=("units_2", "sum"),
             flete=("flete", "max"),
+            capacidad=("capacidad", "max"),
         ).reset_index()
 
         # Tipo de viaje
         vuelta_agg["tipo_viaje"] = vuelta_agg["trip_number"].apply(
             lambda x: "Primera vuelta" if x == 1 else "Segunda vuelta")
+
+        # MAX CUBE por vuelta = bultos / capacidad
+        vuelta_agg["max_cube"] = vuelta_agg.apply(
+            lambda r: round(r["bultos"] / r["capacidad"] * 100) if r["capacidad"] > 0 else 0,
+            axis=1,
+        )
 
         # CxS por vuelta
         vuelta_agg["cxs_pct"] = vuelta_agg.apply(
@@ -1029,13 +1041,15 @@ else:
         total_vueltas = len(vuelta_agg)
         vueltas_2da = (vuelta_agg["trip_number"] == 2).sum()
         sin_flete = (vuelta_agg["flete"] == 0).sum()
+        avg_max_cube = round(vuelta_agg["max_cube"].mean()) if not vuelta_agg.empty else 0
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("💰 CxS Global", f"{cxs_global}%")
-        c2.metric("🚛 Camiones", total_camiones)
-        c3.metric("🔄 Total Viajes", total_vueltas)
-        c4.metric("⚠️ 2das Vueltas", int(vueltas_2da))
-        c5.metric("📦 Flete Total", f"${total_flete:,}")
+        c2.metric("📦 Max Cube Prom.", f"{avg_max_cube}%")
+        c3.metric("🚛 Camiones", total_camiones)
+        c4.metric("🔄 Total Viajes", total_vueltas)
+        c5.metric("⚠️ 2das Vueltas", int(vueltas_2da))
+        c6.metric("📦 Flete Total", f"${total_flete:,}")
 
         if sin_flete > 0:
             st.markdown(
@@ -1050,16 +1064,17 @@ else:
 
         veh_show = vuelta_agg[[
             "vehicle_code", "conductor", "operador", "centro",
-            "tipo_viaje", "salas", "bultos", "venta",
+            "tipo_viaje", "salas", "bultos", "max_cube", "venta",
             "flete", "cxs_pct"
         ]].copy()
         veh_show["bultos"] = veh_show["bultos"].astype(int)
+        veh_show["max_cube"] = veh_show["max_cube"].apply(lambda x: f"{x}%")
         veh_show["venta"] = veh_show["venta"].apply(lambda x: f"${int(x):,}")
         veh_show["flete"] = veh_show["flete"].apply(lambda x: f"${int(x):,}" if x > 0 else "Sin flete")
         veh_show["cxs_pct"] = veh_show["cxs_pct"].apply(lambda x: f"{x}%")
         veh_show.columns = [
             "Vehículo", "Conductor", "Operador", "Centro",
-            "Vuelta", "Salas", "Bultos", "Venta",
+            "Vuelta", "Salas", "Bultos", "Max Cube", "Venta",
             "Flete", "CxS %"
         ]
 
@@ -1081,10 +1096,24 @@ else:
                 pass
             return ""
 
+        def color_max_cube(val):
+            try:
+                num = float(str(val).replace("%", ""))
+                if num < 50:
+                    return "background-color: #fee2e2; color: #991b1b"
+                elif num < 75:
+                    return "background-color: #fef9c3; color: #854d0e"
+                else:
+                    return "background-color: #dcfce7; color: #166534"
+            except Exception:
+                pass
+            return ""
+
         st.dataframe(
             veh_show.style
                 .map(color_vuelta, subset=["Vuelta"])
-                .map(color_cxs, subset=["CxS %"]),
+                .map(color_cxs, subset=["CxS %"])
+                .map(color_max_cube, subset=["Max Cube"]),
             use_container_width=True,
             hide_index=True,
             height=600,
