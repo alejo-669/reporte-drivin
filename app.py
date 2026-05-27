@@ -325,6 +325,8 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
+    st.divider()
+    st.markdown('<div style="text-align:center"><img src="https://www.bimbo.cl/sites/default/files/2024-03/osito-bimbo.png" width="120" style="opacity:0.9"></div>',unsafe_allow_html=True)
 
 # ── KPI Calculations ────────────────────────────────────────
 total_ent=len(df)
@@ -509,11 +511,13 @@ elif page=="📈 Tendencias":
         go.Scatter(x=bd["Fecha"],y=bd["Bultos"],name="Bultos",mode="lines+markers",line=dict(color=BIMBO_CELESTE,width=3),marker=dict(size=8)),
         go.Scatter(x=td["Fecha"],y=td["OTD %"],name="OTD %",mode="lines+markers",line=dict(color=BIMBO_BLUE,width=3),marker=dict(size=8),yaxis="y2"),
         go.Scatter(x=od["Fecha"],y=od["OTIF %"],name="OTIF %",mode="lines+markers",line=dict(color=BIMBO_GREEN,width=3),marker=dict(size=8),yaxis="y2"),
-    ],layout=go.Layout(**PLOTLY_BASE,height=400,margin=dict(l=60,r=60,t=30,b=40),
+    ])
+    fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(255,255,255,1)",
+        font=dict(color="#1a1a2e",size=12),height=400,margin=dict(l=60,r=60,t=30,b=40),
         xaxis=dict(dtick="D1",tickformat="%d/%m/%Y"),
-        yaxis=dict(title=dict(text="Bultos",font=dict(color=BIMBO_CELESTE)),tickfont=dict(color=BIMBO_CELESTE),side="left"),
-        yaxis2=dict(title=dict(text="OTD / OTIF %",font=dict(color=BIMBO_BLUE)),tickfont=dict(color=BIMBO_BLUE),side="right",overlaying="y",range=[0,100]),
-        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1)))
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
+    fig.update_layout(yaxis=dict(title=dict(text="Bultos",font=dict(color=BIMBO_CELESTE)),tickfont=dict(color=BIMBO_CELESTE),side="left"))
+    fig.update_layout(yaxis2=dict(title=dict(text="OTD / OTIF %",font=dict(color=BIMBO_BLUE)),tickfont=dict(color=BIMBO_BLUE),side="right",overlaying="y",range=[0,100]))
     st.plotly_chart(fig,use_container_width=True)
     st.markdown('<div class="section-title">🏭 Entregas por Centro</div>',unsafe_allow_html=True)
     ec=df.groupby("schema_name").agg(ent=("order_code","count"),otd=("status",lambda x:round(((x=="approved")|(x=="partial")).sum()/len(x)*100,1)),otif=("otif",lambda x:round((x=="Si").sum()/len(x)*100,1)),bul=("units_1","sum"),ven=("units_2","sum")).reset_index().sort_values("ent",ascending=False)
@@ -589,6 +593,7 @@ elif page=="📊 Rendimiento Operador":
         st.divider()
         # Format
         ro_d=ro.copy(); ro_d["Venta"]=ro_d["Venta"].apply(lambda x:f"${x:,}"); ro_d["Flete"]=ro_d["Flete"].apply(lambda x:f"${x:,}")
+        ro_d["OTD %"]=ro_d["OTD %"].apply(lambda x:f"{x}%"); ro_d["OTIF %"]=ro_d["OTIF %"].apply(lambda x:f"{x}%")
         ro_d["CxS %"]=ro_d["CxS %"].apply(lambda x:f"{x}%"); ro_d["Max Cube %"]=ro_d["Max Cube %"].apply(lambda x:f"{x}%")
         st.dataframe(ro_d.style.map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube %"]),use_container_width=True,hide_index=True)
         # Charts
