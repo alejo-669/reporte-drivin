@@ -326,7 +326,9 @@ with st.sidebar:
     st.divider()
     st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
     st.divider()
-    st.markdown('<div style="text-align:center"><img src="https://www.bimbo.cl/sites/default/files/2024-03/osito-bimbo.png" width="120" style="opacity:0.9"></div>',unsafe_allow_html=True)
+    # Para mostrar el osito: sube 'osito.png' al repo y descomenta la línea siguiente
+    st.image("osito.png", width=120)
+    
 
 # ── KPI Calculations ────────────────────────────────────────
 total_ent=len(df)
