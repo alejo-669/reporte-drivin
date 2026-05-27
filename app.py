@@ -1,14 +1,10 @@
 """
 Dashboard Operacional Drivin — Bimbo Ideal
 ==========================================
-Tema claro · Paleta Bimbo (azul/celeste/blanco)
-Zona horaria: America/Santiago
-Auto-refresh cada 10 minutos
+Multi-page sidebar · Tema claro Bimbo
+Zona horaria: America/Santiago · Auto-refresh 10 min
 """
-
-import os
-import json
-import sqlite3
+import os, json, sqlite3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -16,1136 +12,595 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
-from pathlib import Path
 
-# ── Zona horaria Chile ──────────────────────────────────────
+# ── Config ──────────────────────────────────────────────────
 TZ_CHILE = ZoneInfo("America/Santiago")
 NOW_CHILE = datetime.now(TZ_CHILE)
-
-# ── Page Config ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Drivin Dashboard — Bimbo Ideal",
-    page_icon="🚛",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
-
-# Auto-refresh cada 10 minutos
-st_autorefresh(interval=600_000, key="data_refresh")
-
-# ── Traducciones y mapeos ───────────────────────────────────
-STATUS_MAP = {
-    "approved": "Aprobado",
-    "rejected": "Rechazado",
-    "partial": "Parcial",
-    "pending": "Pendiente",
-}
-
-def translate_status(val):
-    if pd.isna(val) or val is None or val == "":
-        return "-"
-    return STATUS_MAP.get(str(val).lower(), str(val))
-
-def clean_none(val):
-    if pd.isna(val) or val is None or str(val).strip().lower() in ("none", "nan", ""):
-        return "-"
-    return val
-
-def format_bultos(val):
-    try:
-        return int(float(val))
-    except (ValueError, TypeError):
-        return 0
-
-# ── Estilos CSS — Tema Claro Bimbo ──────────────────────────
-st.markdown("""
-<style>
-    .stApp, .main, [data-testid="stAppViewContainer"] {
-        background-color: #ffffff !important;
-        color: #1a1a2e !important;
-    }
-    section[data-testid="stSidebar"] {
-        background-color: #f0f4f8 !important;
-    }
-    .main-header {
-        font-size: 1.7rem;
-        font-weight: 800;
-        color: #003087;
-        margin-bottom: 2px;
-        letter-spacing: -0.3px;
-    }
-    .sub-header {
-        font-size: 0.88rem;
-        color: #5a6a7e;
-        margin-bottom: 1.2rem;
-    }
-    div[data-testid="metric-container"] {
-        background: linear-gradient(135deg, #f7faff 0%, #edf2fa 100%);
-        border: 1px solid #cdd9e5;
-        border-radius: 12px;
-        padding: 16px 18px;
-        box-shadow: 0 1px 4px rgba(0,48,135,0.06);
-    }
-    div[data-testid="metric-container"] label {
-        color: #5a6a7e !important;
-        font-size: 0.82rem !important;
-        font-weight: 600 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-    }
-    div[data-testid="metric-container"] [data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-        font-weight: 800 !important;
-        color: #003087 !important;
-    }
-    .alerta-box {
-        background: linear-gradient(135deg, #fff5f5 0%, #fee2e2 100%);
-        border: 1px solid #f87171;
-        border-radius: 10px;
-        padding: 12px 18px;
-        color: #b91c1c;
-        font-weight: 600;
-        margin-bottom: 1rem;
-    }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 6px;
-        border-bottom: 2px solid #e2e8f0;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        color: #5a6a7e;
-        font-weight: 600;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #003087 !important;
-        border-bottom: 3px solid #003087 !important;
-    }
-    .stDataFrame thead tr th {
-        background-color: #003087 !important;
-        color: #ffffff !important;
-        font-weight: 700 !important;
-        text-align: center !important;
-    }
-    .stDataFrame tbody tr:nth-child(even) {
-        background-color: #f7faff;
-    }
-    div[data-baseweb="select"] > div {
-        border-color: #cdd9e5 !important;
-        background-color: #f7faff !important;
-        color: #1a1a2e !important;
-    }
-    hr {
-        border-color: #e2e8f0 !important;
-    }
-    .section-title {
-        font-size: 1.05rem;
-        font-weight: 700;
-        color: #003087;
-        margin-bottom: 0.5rem;
-        padding-bottom: 4px;
-        border-bottom: 2px solid #38bdf8;
-        display: inline-block;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ── Plotly theme ────────────────────────────────────────────
-PLOTLY_LAYOUT = dict(
-    template="plotly_white",
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(255,255,255,1)",
-    font=dict(color="#1a1a2e", size=12),
-    margin=dict(l=10, r=10, t=30, b=10),
-    colorway=["#003087", "#38bdf8", "#0ea5e9", "#7dd3fc", "#0369a1", "#bae6fd"],
-)
-
 BIMBO_BLUE = "#003087"
 BIMBO_CELESTE = "#38bdf8"
 BIMBO_GREEN = "#16a34a"
 BIMBO_RED = "#dc2626"
-
-
-# ── Snapshot system for GPS wait times ──────────────────────
 DB_PATH = "espera_historica.db"
+ALERTA_MIN_SALA = 90   # min en sala para alerta
+ALERTA_HR_INICIO = 7   # hora para alerta sin iniciar
 
+st.set_page_config(page_title="Drivin — Bimbo Ideal", page_icon="🚛", layout="wide", initial_sidebar_state="expanded")
+st_autorefresh(interval=600_000, key="data_refresh")
 
-def init_db():
-    """Inicializa SQLite para guardar histórico de esperas GPS."""
-    conn = sqlite3.connect(DB_PATH)
-    # Eliminar tabla vieja con estructura incorrecta (si existe)
-    conn.execute("DROP TABLE IF EXISTS espera_snapshots")
-    # Crear tabla con estructura correcta
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS espera_visitas (
-            address_code TEXT,
-            planned_date TEXT,
-            tracked_arrival TEXT,
-            tracked_service_time REAL,
-            tracked_leave TEXT,
-            snapshot_at TEXT,
-            PRIMARY KEY (address_code, planned_date, tracked_arrival)
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-
-def save_espera_snapshot(records: list):
-    """Guarda snapshot usando tracked_arrival como ID de visita.
-    
-    Lógica:
-    - Mismo tracked_arrival = misma visita → actualiza con MAX(tracked_service_time)
-    - Diferente tracked_arrival = nueva visita → inserta nuevo registro
-    """
-    conn = sqlite3.connect(DB_PATH)
-    for r in records:
-        tst = r.get("tracked_service_time")
-        ta = r.get("tracked_arrival")
-        if tst and tst > 0 and ta:
-            try:
-                # Verificar si ya existe esta visita
-                existing = conn.execute("""
-                    SELECT tracked_service_time FROM espera_visitas
-                    WHERE address_code = ? AND planned_date = ? AND tracked_arrival = ?
-                """, (r.get("address_code"), r.get("planned_date"), ta)).fetchone()
-
-                if existing:
-                    # Misma visita: actualizar solo si el nuevo tst es mayor
-                    if tst > existing[0]:
-                        conn.execute("""
-                            UPDATE espera_visitas
-                            SET tracked_service_time = ?, tracked_leave = ?, snapshot_at = ?
-                            WHERE address_code = ? AND planned_date = ? AND tracked_arrival = ?
-                        """, (tst, r.get("tracked_leave"),
-                              datetime.now(TZ_CHILE).isoformat(),
-                              r.get("address_code"), r.get("planned_date"), ta))
-                else:
-                    # Nueva visita (tracked_arrival distinto)
-                    conn.execute("""
-                        INSERT INTO espera_visitas
-                        (address_code, planned_date, tracked_arrival, tracked_service_time, tracked_leave, snapshot_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (r.get("address_code"), r.get("planned_date"), ta,
-                          tst, r.get("tracked_leave"),
-                          datetime.now(TZ_CHILE).isoformat()))
-            except Exception:
-                pass
-    conn.commit()
-    conn.close()
-
-
-def get_espera_historica(planned_dates: list) -> dict:
-    """Obtiene por sala+día: suma de max por visita, max individual, y cantidad de visitas."""
-    conn = sqlite3.connect(DB_PATH)
-    result = {}
+# ── Helpers ─────────────────────────────────────────────────
+STATUS_MAP = {"approved": "Aprobado", "rejected": "Rechazado", "partial": "Parcial", "pending": "Pendiente"}
+def translate_status(v):
+    return "-" if pd.isna(v) or v is None or v == "" else STATUS_MAP.get(str(v).lower(), str(v))
+def clean_none(v):
+    return "-" if pd.isna(v) or v is None or str(v).strip().lower() in ("none","nan","") else v
+def fmt_bultos(v):
+    try: return int(float(v))
+    except: return 0
+def parse_hour_chile(dt_str):
+    if not dt_str or pd.isna(dt_str): return "-"
     try:
-        placeholders = ",".join(["?"] * len(planned_dates))
-        rows = conn.execute(f"""
-            SELECT address_code, planned_date,
-                   SUM(tracked_service_time) as total_espera,
-                   MAX(tracked_service_time) as max_espera,
-                   COUNT(*) as n_visitas
-            FROM espera_visitas
-            WHERE planned_date IN ({placeholders})
-            GROUP BY address_code, planned_date
-        """, planned_dates).fetchall()
-        for row in rows:
-            result[(row[0], row[1])] = {
-                "total": row[2],
-                "max": row[3],
-                "visitas": row[4],
-            }
-    except Exception:
-        pass
-    conn.close()
-    return result
+        dt = pd.to_datetime(dt_str)
+        if dt.tzinfo is None: dt = dt.tz_localize("UTC")
+        return dt.astimezone(TZ_CHILE).strftime("%H:%M")
+    except: return "-"
 
+# Color functions
+def color_status(v):
+    if v=="Aprobado": return "background-color:#dcfce7;color:#166534"
+    if v=="Rechazado": return "background-color:#fee2e2;color:#991b1b"
+    if v in("Parcial","Pendiente"): return "background-color:#fef9c3;color:#854d0e"
+    return ""
+def color_estado(v):
+    if v=="Finalizada": return "background-color:#dcfce7;color:#166534"
+    if v=="En ruta": return "background-color:#dbeafe;color:#1e40af"
+    if v=="Sin iniciar": return "background-color:#fee2e2;color:#991b1b"
+    return ""
+def color_ubicacion(v):
+    s=str(v)
+    if "Sin iniciar" in s: return "background-color:#fee2e2;color:#991b1b"
+    if "En sala" in s: return "background-color:#fef9c3;color:#854d0e"
+    if "Pendiente" in s: return "background-color:#dbeafe;color:#1e40af"
+    if "Visitada" in s: return "background-color:#e0e7ff;color:#3730a3"
+    if "finalizada" in s.lower() or "Entregada" in s: return "background-color:#dcfce7;color:#166534"
+    return ""
+def color_vuelta(v):
+    return "background-color:#fef9c3;color:#854d0e" if v=="Segunda vuelta" else ""
+def color_cxs(v):
+    try:
+        n=float(str(v).replace("%",""))
+        if n>10: return "background-color:#fee2e2;color:#991b1b"
+        if n>5: return "background-color:#fef9c3;color:#854d0e"
+        if n>0: return "background-color:#dcfce7;color:#166534"
+    except: pass
+    return ""
+def color_maxcube(v):
+    try:
+        n=float(str(v).replace("%",""))
+        if n<50: return "background-color:#fee2e2;color:#991b1b"
+        if n<75: return "background-color:#fef9c3;color:#854d0e"
+        return "background-color:#dcfce7;color:#166534"
+    except: pass
+    return ""
+
+PLOTLY_BASE = dict(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(255,255,255,1)", font=dict(color="#1a1a2e",size=12), margin=dict(l=10,r=10,t=30,b=10))
+
+# ── Snapshot DB ─────────────────────────────────────────────
+def init_db():
+    conn=sqlite3.connect(DB_PATH)
+    conn.execute("DROP TABLE IF EXISTS espera_snapshots")
+    conn.execute("""CREATE TABLE IF NOT EXISTS espera_visitas(
+        address_code TEXT, planned_date TEXT, tracked_arrival TEXT,
+        tracked_service_time REAL, tracked_leave TEXT, snapshot_at TEXT,
+        PRIMARY KEY(address_code,planned_date,tracked_arrival))""")
+    conn.commit(); conn.close()
+
+def save_espera_snapshot(records):
+    conn=sqlite3.connect(DB_PATH)
+    for r in records:
+        tst=r.get("tracked_service_time"); ta=r.get("tracked_arrival")
+        if tst and tst>0 and ta:
+            try:
+                ex=conn.execute("SELECT tracked_service_time FROM espera_visitas WHERE address_code=? AND planned_date=? AND tracked_arrival=?",
+                    (r.get("address_code"),r.get("planned_date"),ta)).fetchone()
+                if ex:
+                    if tst>ex[0]:
+                        conn.execute("UPDATE espera_visitas SET tracked_service_time=?,tracked_leave=?,snapshot_at=? WHERE address_code=? AND planned_date=? AND tracked_arrival=?",
+                            (tst,r.get("tracked_leave"),NOW_CHILE.isoformat(),r.get("address_code"),r.get("planned_date"),ta))
+                else:
+                    conn.execute("INSERT INTO espera_visitas VALUES(?,?,?,?,?,?)",
+                        (r.get("address_code"),r.get("planned_date"),ta,tst,r.get("tracked_leave"),NOW_CHILE.isoformat()))
+            except: pass
+    conn.commit(); conn.close()
+
+def get_espera_historica(dates):
+    conn=sqlite3.connect(DB_PATH); result={}
+    try:
+        ph=",".join(["?"]*len(dates))
+        for row in conn.execute(f"SELECT address_code,planned_date,SUM(tracked_service_time),MAX(tracked_service_time),COUNT(*) FROM espera_visitas WHERE planned_date IN({ph}) GROUP BY address_code,planned_date",dates).fetchall():
+            result[(row[0],row[1])]={"total":row[2],"max":row[3],"visitas":row[4]}
+    except: pass
+    conn.close(); return result
 
 # ── Data Loading ────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def load_vehicle_fletes() -> tuple:
-    """Carga los fletes (capacity_3/KG) y capacidades (capacity_1/Bandejas) desde Drivin."""
+def load_vehicle_info():
     import requests
-
-    api_key = os.environ.get("DRIVIN_API_KEY", "")
+    api_key=os.environ.get("DRIVIN_API_KEY","")
     if not api_key:
-        try:
-            api_key = st.secrets["DRIVIN_API_KEY"]
-        except Exception:
-            return {}, {}
-
-    url = "https://external.driv.in/api/external/v2/vehicles"
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-
+        try: api_key=st.secrets["DRIVIN_API_KEY"]
+        except: return {},{}
     try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        vehicles = resp.json().get("response", [])
-    except Exception:
-        return {}, {}
-
-    fletes = {}
-    capacidades = {}
+        resp=requests.get("https://external.driv.in/api/external/v2/vehicles",headers={"X-API-KEY":api_key,"Content-Type":"application/json"},timeout=30)
+        resp.raise_for_status(); vehicles=resp.json().get("response",[])
+    except: return {},{}
+    fletes,caps={},{}
     for v in vehicles:
-        code = v.get("code", "")
-        cap1 = v.get("capacity_1", 0) or 0
-        cap3 = v.get("capacity_3", 0) or 0
-        if code:
-            if cap3 > 0:
-                fletes[code] = int(cap3)
-            if cap1 > 0:
-                capacidades[code] = int(cap1)
-    return fletes, capacidades
-
+        c=v.get("code","")
+        if c:
+            c3=v.get("capacity_3",0) or 0
+            c1=v.get("capacity_1",0) or 0
+            if c3>0: fletes[c]=int(c3)
+            if c1>0: caps[c]=int(c1)
+    return fletes,caps
 
 @st.cache_data(ttl=600)
-def load_data_from_api(start_date: str, end_date: str) -> pd.DataFrame:
+def load_data(start_date,end_date):
     import requests
-
-    api_key = os.environ.get("DRIVIN_API_KEY", "")
+    api_key=os.environ.get("DRIVIN_API_KEY","")
     if not api_key:
-        try:
-            api_key = st.secrets["DRIVIN_API_KEY"]
-        except Exception:
-            return pd.DataFrame()
-
-    url = "https://external.driv.in/api/external/v2/pods"
-    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-    params = {"start_date": start_date, "end_date": end_date}
-
+        try: api_key=st.secrets["DRIVIN_API_KEY"]
+        except: return pd.DataFrame()
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        records = resp.json().get("response", [])
+        resp=requests.get("https://external.driv.in/api/external/v2/pods",
+            headers={"X-API-KEY":api_key,"Content-Type":"application/json"},
+            params={"start_date":start_date,"end_date":end_date},timeout=30)
+        resp.raise_for_status(); records=resp.json().get("response",[])
     except Exception as e:
-        st.error(f"Error al consultar API: {e}")
-        return pd.DataFrame()
-
-    if not records:
-        return pd.DataFrame()
-
-    # Guardar snapshot de esperas GPS (preserva valores antes de sobreescritura)
-    try:
-        init_db()
-        save_espera_snapshot(records)
-    except Exception:
-        pass
-
-    rows = []
+        st.error(f"Error API: {e}"); return pd.DataFrame()
+    if not records: return pd.DataFrame()
+    try: init_db(); save_espera_snapshot(records)
+    except: pass
+    rows=[]
     for r in records:
-        base = {
-            "planned_date": r.get("planned_date"),
-            "vehicle_code": r.get("vehicle_code"),
-            "schema_name": r.get("schema_name"),
-            "fleet_name": r.get("fleet_name"),
-            "route_is_started": r.get("route_is_started"),
-            "route_is_finished": r.get("route_is_finished"),
-            "route_started_at": r.get("route_started_at"),
-            "route_finished_at": r.get("route_finished_at"),
-            "driver_name": (r.get("driver_name") or "").strip(),
-            "employer_name": r.get("employer_name"),
-            "address_name": r.get("address_name"),
-            "address_code": r.get("address_code"),
-            "address_city": r.get("address_city"),
-            "tracked_arrival": r.get("tracked_arrival"),
-            "tracked_leave": r.get("tracked_leave"),
-            "tracked_service_time": r.get("tracked_service_time"),
-            "visit_arrival": r.get("visit_arrival"),
-            "visit_leave": r.get("visit_leave"),
-            "trip_number": r.get("trip_number"),
-            "route_code": r.get("route_code"),
-            "eta": r.get("eta"),
-            "time_window_start": (r.get("time_window") or {}).get("start"),
-            "time_window_end": (r.get("time_window") or {}).get("end"),
-        }
-        for o in r.get("orders", []):
-            rows.append({
-                **base,
-                "order_code": o.get("code"),
-                "status": o.get("status"),
-                "reason": o.get("reason"),
-                "otif": o.get("otif"),
-                "near_pod": o.get("near_pod"),
-                "units_1": o.get("units_1") or 0,
-                "units_2": o.get("units_2") or 0,
-                "units_3": o.get("units_3") or 0,
-                "client_name": o.get("client_name"),
-                "tags": json.dumps(o.get("tags", [])),
-                "pod_arrival": o.get("pod_arrival"),
-            })
-
-    df = pd.DataFrame(rows)
-    df["units_1"] = df["units_1"].apply(format_bultos)
-    df["units_2"] = df["units_2"].apply(lambda x: int(float(x)) if pd.notna(x) and x != 0 else 0)
-    df["units_3"] = df["units_3"].apply(lambda x: int(float(x)) if pd.notna(x) and x != 0 else 0)
-    df["status_display"] = df["status"].apply(translate_status)
-    df["tipo_viaje"] = df["trip_number"].apply(
-        lambda x: "Primera vuelta" if x == 1 else ("Segunda vuelta" if x == 2 else "-"))
-    for col in ["reason", "near_pod", "client_name", "driver_name", "address_city", "employer_name"]:
-        if col in df.columns:
-            df[col] = df[col].apply(clean_none)
-
-    # Calcular tiempo de servicio propio desde tracked_arrival/leave (respaldo)
+        base={"planned_date":r.get("planned_date"),"vehicle_code":r.get("vehicle_code"),
+            "schema_name":r.get("schema_name"),"fleet_name":r.get("fleet_name"),
+            "route_is_started":r.get("route_is_started"),"route_is_finished":r.get("route_is_finished"),
+            "route_started_at":r.get("route_started_at"),"route_finished_at":r.get("route_finished_at"),
+            "driver_name":(r.get("driver_name") or "").strip(),"employer_name":r.get("employer_name"),
+            "address_name":r.get("address_name"),"address_code":r.get("address_code"),
+            "address_city":r.get("address_city"),"tracked_arrival":r.get("tracked_arrival"),
+            "tracked_leave":r.get("tracked_leave"),"tracked_service_time":r.get("tracked_service_time"),
+            "visit_arrival":r.get("visit_arrival"),"visit_leave":r.get("visit_leave"),
+            "trip_number":r.get("trip_number"),"route_code":r.get("route_code"),
+            "eta":r.get("eta"),
+            "time_window_start":(r.get("time_window") or {}).get("start"),
+            "time_window_end":(r.get("time_window") or {}).get("end")}
+        for o in r.get("orders",[]):
+            rows.append({**base,"order_code":o.get("code"),"status":o.get("status"),
+                "reason":o.get("reason"),"otif":o.get("otif"),"near_pod":o.get("near_pod"),
+                "units_1":o.get("units_1") or 0,"units_2":o.get("units_2") or 0,
+                "units_3":o.get("units_3") or 0,"client_name":o.get("client_name"),
+                "tags":json.dumps(o.get("tags",[])),"pod_arrival":o.get("pod_arrival")})
+    df=pd.DataFrame(rows)
+    df["units_1"]=df["units_1"].apply(fmt_bultos)
+    df["units_2"]=df["units_2"].apply(lambda x:int(float(x)) if pd.notna(x) and x!=0 else 0)
+    df["units_3"]=df["units_3"].apply(lambda x:int(float(x)) if pd.notna(x) and x!=0 else 0)
+    df["status_display"]=df["status"].apply(translate_status)
+    df["tipo_viaje"]=df["trip_number"].apply(lambda x:"Primera vuelta" if x==1 else("Segunda vuelta" if x==2 else "-"))
+    for col in ["reason","near_pod","client_name","driver_name","address_city","employer_name"]:
+        if col in df.columns: df[col]=df[col].apply(clean_none)
+    # Espera calculada
     if "tracked_arrival" in df.columns and "tracked_leave" in df.columns:
-        df["_arrival"] = pd.to_datetime(df["tracked_arrival"], errors="coerce")
-        df["_leave"] = pd.to_datetime(df["tracked_leave"], errors="coerce")
-        df["espera_calculada"] = ((df["_leave"] - df["_arrival"]).dt.total_seconds() / 60).round(0)
-        df["espera_calculada"] = df["espera_calculada"].apply(
-            lambda x: int(x) if pd.notna(x) and x > 0 else None)
-        df.drop(columns=["_arrival", "_leave"], inplace=True)
-    else:
-        df["espera_calculada"] = None
-
-    # Usar el mayor entre tracked_service_time y espera_calculada por fila
-    df["espera_real"] = df[["tracked_service_time", "espera_calculada"]].max(axis=1)
-
-    # Consultar histórico de esperas (captura visitas antes de sobreescritura API)
+        df["_a"]=pd.to_datetime(df["tracked_arrival"],errors="coerce")
+        df["_l"]=pd.to_datetime(df["tracked_leave"],errors="coerce")
+        df["espera_calculada"]=((df["_l"]-df["_a"]).dt.total_seconds()/60).round(0)
+        df["espera_calculada"]=df["espera_calculada"].apply(lambda x:int(x) if pd.notna(x) and x>0 else None)
+        df.drop(columns=["_a","_l"],inplace=True)
+    else: df["espera_calculada"]=None
+    df["espera_real"]=df[["tracked_service_time","espera_calculada"]].max(axis=1)
     try:
-        planned_dates = df["planned_date"].dropna().unique().tolist()
-        if planned_dates:
-            historico = get_espera_historica(planned_dates)
-
-            def get_hist_field(row, field):
-                h = historico.get((row["address_code"], row["planned_date"]))
-                return h[field] if h else None
-
-            df["espera_hist_total"] = df.apply(lambda r: get_hist_field(r, "total"), axis=1)
-            df["espera_hist_max"] = df.apply(lambda r: get_hist_field(r, "max"), axis=1)
-            df["visitas_gps"] = df.apply(lambda r: get_hist_field(r, "visitas"), axis=1)
-
-            # Espera total = suma de todas las visitas distintas (desde histórico)
-            # Si no hay histórico, usar espera_real actual
-            df["espera_total_sala"] = df["espera_hist_total"].combine_first(df["espera_real"])
-
-            # Espera máxima = la visita individual más larga
-            df["espera_max_sala"] = df[["espera_real", "espera_hist_max"]].max(axis=1)
-
-            # Visitas: mínimo 1
-            df["visitas_gps"] = df["visitas_gps"].fillna(1).astype(int)
-        else:
-            df["espera_total_sala"] = df["espera_real"]
-            df["espera_max_sala"] = df["espera_real"]
-            df["visitas_gps"] = 1
-    except Exception:
-        df["espera_total_sala"] = df["espera_real"]
-        df["espera_max_sala"] = df["espera_real"]
-        df["visitas_gps"] = 1
-
-    # Aplicar max/sum por sala+día por si hay múltiples filas en el DataFrame
+        dates=df["planned_date"].dropna().unique().tolist()
+        if dates:
+            h=get_espera_historica(dates)
+            df["_ht"]=df.apply(lambda r:(h.get((r["address_code"],r["planned_date"])) or {}).get("total"),axis=1)
+            df["_hm"]=df.apply(lambda r:(h.get((r["address_code"],r["planned_date"])) or {}).get("max"),axis=1)
+            df["visitas_gps"]=df.apply(lambda r:(h.get((r["address_code"],r["planned_date"])) or {}).get("visitas"),axis=1)
+            df["espera_total_sala"]=df["_ht"].combine_first(df["espera_real"])
+            df["espera_max_sala"]=df[["espera_real","_hm"]].max(axis=1)
+            df["visitas_gps"]=df["visitas_gps"].fillna(1).astype(int)
+            df.drop(columns=["_ht","_hm"],inplace=True)
+        else: df["espera_total_sala"]=df["espera_real"]; df["espera_max_sala"]=df["espera_real"]; df["visitas_gps"]=1
+    except: df["espera_total_sala"]=df["espera_real"]; df["espera_max_sala"]=df["espera_real"]; df["visitas_gps"]=1
     if not df.empty:
-        df["espera_max_sala"] = df.groupby(["address_code", "planned_date"])["espera_max_sala"].transform("max")
-        df["espera_total_sala"] = df.groupby(["address_code", "planned_date"])["espera_total_sala"].transform("max")
-        df["visitas_gps"] = df.groupby(["address_code", "planned_date"])["visitas_gps"].transform("max")
-
+        df["espera_max_sala"]=df.groupby(["address_code","planned_date"])["espera_max_sala"].transform("max")
+        df["espera_total_sala"]=df.groupby(["address_code","planned_date"])["espera_total_sala"].transform("max")
+        df["visitas_gps"]=df.groupby(["address_code","planned_date"])["visitas_gps"].transform("max")
     return df
 
+# ── Ubicacion functions ─────────────────────────────────────
+def ubicacion_vehiculos(df):
+    ub={}
+    for v,g in df.groupby("vehicle_code"):
+        r0=g.iloc[0]
+        if not r0["route_is_started"] and not r0["route_is_finished"]: ub[v]="🔴 Sin iniciar ruta"; continue
+        if r0["route_is_finished"]: ub[v]="✅ Ruta finalizada"; continue
+        cand=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))]
+        if not cand.empty: ub[v]=f"📍 En sala {cand.loc[cand['tracked_service_time'].idxmax(),'address_code']}"; continue
+        en=g[g["tracked_arrival"].notna()&g["tracked_leave"].isna()]
+        if not en.empty: ub[v]=f"📍 En sala {en.iloc[0]['address_code']}"; continue
+        pend=g[g["tracked_arrival"].isna()].copy()
+        if not pend.empty:
+            pend["_e"]=pd.to_datetime(pend["planned_date"]+" "+pend["eta"].fillna("23:59"),errors="coerce")
+            pend=pend.sort_values("_e"); ub[v]=f"🚛 En ruta hacia sala {pend.iloc[0]['address_code']}"; continue
+        ub[v]="🚛 En ruta (todas las salas visitadas)"
+    return ub
 
-def parse_hour_chile(dt_str):
-    if not dt_str or pd.isna(dt_str):
-        return "-"
-    try:
-        dt = pd.to_datetime(dt_str)
-        if dt.tzinfo is None:
-            dt = dt.tz_localize("UTC")
-        return dt.astimezone(TZ_CHILE).strftime("%H:%M")
-    except Exception:
-        return "-"
-
-
-def color_status_light(val):
-    if val == "Aprobado":
-        return "background-color: #dcfce7; color: #166534"
-    elif val == "Rechazado":
-        return "background-color: #fee2e2; color: #991b1b"
-    elif val in ("Parcial", "Pendiente"):
-        return "background-color: #fef9c3; color: #854d0e"
-    return ""
-
-
-def color_tipo_viaje(val):
-    if val == "Segunda vuelta":
-        return "background-color: #fef9c3; color: #854d0e"
-    return ""
-
-
-def color_ubicacion(val):
-    val_str = str(val)
-    if "Sin iniciar" in val_str:
-        return "background-color: #fee2e2; color: #991b1b"
-    elif "En sala" in val_str:
-        return "background-color: #fef9c3; color: #854d0e"
-    elif "Pendiente" in val_str:
-        return "background-color: #dbeafe; color: #1e40af"
-    elif "Visitada" in val_str:
-        return "background-color: #e0e7ff; color: #3730a3"
-    elif "finalizada" in val_str.lower() or "Entregada" in val_str:
-        return "background-color: #dcfce7; color: #166534"
-    return ""
-
-
-def calcular_ubicacion_vehiculos(df_full: pd.DataFrame) -> dict:
-    """Calcula la ubicación actual de cada vehículo basándose en el estado de las entregas.
-
-    Retorna dict: vehicle_code → mensaje de ubicación
-    """
-    ubicaciones = {}
-
-    for vehicle, group in df_full.groupby("vehicle_code"):
-        row0 = group.iloc[0]
-        is_started = row0["route_is_started"]
-        is_finished = row0["route_is_finished"]
-
-        # 1. Si no ha iniciado
-        if not is_started and not is_finished:
-            ubicaciones[vehicle] = "🔴 Sin iniciar ruta"
-            continue
-
-        # 2. Si ya terminó
-        if is_finished:
-            ubicaciones[vehicle] = "✅ Ruta finalizada"
-            continue
-
-        # 3. En ruta — determinar dónde está
-        # Buscar sala donde está ahora: tiene tracked_service_time > 0 y status pendiente
-        en_sala_tst = group[
-            (group["tracked_service_time"].notna()) &
-            (group["tracked_service_time"] > 0) &
-            (group["status"].isin(["pending", None, ""]) | group["status_display"].eq("Pendiente"))
-        ]
-        if not en_sala_tst.empty:
-            sala = en_sala_tst.iloc[0]
-            ubicaciones[vehicle] = f"📍 En sala {sala['address_code']}"
-            continue
-
-        # También verificar: tiene arrival pero no leave
-        en_sala = group[
-            group["tracked_arrival"].notna() & group["tracked_leave"].isna()
-        ]
-        if not en_sala.empty:
-            sala = en_sala.iloc[0]
-            ubicaciones[vehicle] = f"📍 En sala {sala['address_code']}"
-            continue
-
-        # 4. Buscar próxima sala (sin arrival, ordenada por ETA)
-        pendientes = group[group["tracked_arrival"].isna()].copy()
-        if not pendientes.empty:
-            # Ordenar por ETA para encontrar la próxima
-            pendientes["_eta_sort"] = pd.to_datetime(
-                pendientes["planned_date"] + " " + pendientes["eta"].fillna("23:59"),
-                errors="coerce"
-            )
-            pendientes = pendientes.sort_values("_eta_sort")
-            prox = pendientes.iloc[0]
-            ubicaciones[vehicle] = f"🚛 En ruta hacia sala {prox['address_code']}"
-            continue
-
-        # 5. Todas las salas visitadas pero ruta no marcada como finalizada
-        ubicaciones[vehicle] = "🚛 En ruta (todas las salas visitadas)"
-
-    return ubicaciones
-
-
-def calcular_ubicacion_por_sala(df_full: pd.DataFrame) -> pd.Series:
-    """Calcula la ubicación/estado por cada fila (sala) del DataFrame.
-
-    Lógica de prioridad:
-    1. Ruta no iniciada → Sin iniciar
-    2. Status completado (approved/rejected/partial) O tiene motivo → Entregada
-    3. tracked_service_time > 0 y status pendiente → candidata a "En sala"
-       (solo la sala con mayor tracked_service_time sin status es la actual)
-    4. Sin datos → Pendiente
-    """
-    # Primero identificar la sala ACTUAL por vehículo:
-    # Es la que tiene tracked_service_time > 0, status pendiente, y el TST más alto
-    sala_actual = {}
-    for vehicle, group in df_full.groupby("vehicle_code"):
-        if not group.iloc[0]["route_is_started"] or group.iloc[0]["route_is_finished"]:
-            continue
-        # Candidatas: tienen tst > 0 y no tienen status definitivo
-        candidatas = group[
-            (group["tracked_service_time"].notna()) &
-            (group["tracked_service_time"] > 0) &
-            (~group["status"].isin(["approved", "rejected", "partial"]))
-        ]
-        if not candidatas.empty:
-            # La que tiene el mayor tracked_service_time es donde está ahora
-            # (la API actualiza el tst de la sala actual en tiempo real)
-            idx_max = candidatas["tracked_service_time"].idxmax()
-            sala_actual[vehicle] = idx_max
-
-    def estado_fila(row):
-        idx = row.name
-
-        # Si la ruta no ha iniciado
-        if not row["route_is_started"] and not row["route_is_finished"]:
-            return "🔴 Sin iniciar ruta"
-
-        # Si tiene status definitivo (approved, rejected, partial) o motivo → ya entregada
-        status = str(row.get("status", "")).lower()
-        reason = str(row.get("reason", ""))
-        if status in ("approved", "rejected", "partial") or (reason not in ("-", "", "nan", "None") and pd.notna(row.get("reason"))):
-            return "✅ Entregada"
-
-        # Si la ruta ya finalizó y no tiene status
-        if row["route_is_finished"]:
-            return "✅ Ruta finalizada"
-
-        # Ruta en curso, sin status definitivo
-        vehicle = row["vehicle_code"]
-
-        # ¿Es la sala actual de este vehículo?
-        if vehicle in sala_actual and sala_actual[vehicle] == idx:
-            return f"📍 En sala {row['address_code']}"
-
-        # Tiene tst > 0 pero no es la actual → ya fue visitada (el camión ya se fue)
-        tst = row.get("tracked_service_time")
-        if pd.notna(tst) and tst > 0:
-            return "🔵 Visitada (sin status)"
-
-        # Sin datos de visita → pendiente
+def ubicacion_por_sala(df):
+    sala_actual={}
+    for v,g in df.groupby("vehicle_code"):
+        if not g.iloc[0]["route_is_started"] or g.iloc[0]["route_is_finished"]: continue
+        c=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))]
+        if not c.empty: sala_actual[v]=c["tracked_service_time"].idxmax()
+    def f(row):
+        if not row["route_is_started"] and not row["route_is_finished"]: return "🔴 Sin iniciar ruta"
+        s=str(row.get("status","")).lower(); reason=str(row.get("reason",""))
+        if s in("approved","rejected","partial") or (reason not in("-","","nan","None") and pd.notna(row.get("reason"))): return "✅ Entregada"
+        if row["route_is_finished"]: return "✅ Ruta finalizada"
+        if row["vehicle_code"] in sala_actual and sala_actual[row["vehicle_code"]]==row.name: return f"📍 En sala {row['address_code']}"
+        tst=row.get("tracked_service_time")
+        if pd.notna(tst) and tst>0: return "🔵 Visitada (sin status)"
         return "🚛 Pendiente"
+    return df.apply(f,axis=1)
 
-    return df_full.apply(estado_fila, axis=1)
+# ── CSS ─────────────────────────────────────────────────────
+st.markdown("""<style>
+.stApp,[data-testid="stAppViewContainer"]{background:#fff!important;color:#1a1a2e!important}
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,"""+BIMBO_BLUE+""" 0%,#001a4d 100%)!important}
+section[data-testid="stSidebar"] *{color:#e2e8f0!important}
+section[data-testid="stSidebar"] .stSelectbox label,section[data-testid="stSidebar"] .stDateInput label,
+section[data-testid="stSidebar"] .stRadio label{color:#94a3b8!important;font-size:.82rem!important}
+section[data-testid="stSidebar"] [data-baseweb="select"] > div{background:#1e3a6e!important;border-color:#334155!important;color:#e2e8f0!important}
+div[data-testid="metric-container"]{background:linear-gradient(135deg,#f7faff,#edf2fa);border:1px solid #cdd9e5;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,48,135,.06)}
+div[data-testid="metric-container"] label{color:#5a6a7e!important;font-size:.78rem!important;font-weight:600!important;text-transform:uppercase}
+div[data-testid="metric-container"] [data-testid="stMetricValue"]{font-size:1.6rem!important;font-weight:800!important;color:"""+BIMBO_BLUE+"""!important}
+.stDataFrame thead tr th{background:"""+BIMBO_BLUE+"""!important;color:#fff!important;font-weight:700!important}
+.alerta-box{background:linear-gradient(135deg,#fff5f5,#fee2e2);border:1px solid #f87171;border-radius:10px;padding:12px 18px;color:#b91c1c;font-weight:600;margin-bottom:.8rem}
+.alerta-yellow{background:linear-gradient(135deg,#fffbeb,#fef3c7);border:1px solid #f59e0b;border-radius:10px;padding:12px 18px;color:#92400e;font-weight:600;margin-bottom:.8rem}
+.alerta-blue{background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #3b82f6;border-radius:10px;padding:12px 18px;color:#1e40af;font-weight:600;margin-bottom:.8rem}
+.section-title{font-size:1.05rem;font-weight:700;color:"""+BIMBO_BLUE+""";margin-bottom:.5rem;padding-bottom:4px;border-bottom:2px solid """+BIMBO_CELESTE+""";display:inline-block}
+.sidebar-title{font-size:1.3rem;font-weight:800;color:#fff;text-align:center;margin-bottom:1.5rem;padding:10px 0;border-bottom:2px solid """+BIMBO_CELESTE+"""}
+hr{border-color:#e2e8f0!important}
+</style>""",unsafe_allow_html=True)
 
-
-# ── Header ──────────────────────────────────────────────────
-hora_chile = NOW_CHILE.strftime("%d/%m/%Y %H:%M")
-st.markdown('<div class="main-header">🚛 Dashboard Operacional Drivin — Bimbo Ideal</div>', unsafe_allow_html=True)
-st.markdown(f'<div class="sub-header">Auto-refresh cada 10 min · Última actualización: {hora_chile}</div>', unsafe_allow_html=True)
-
-# ── Filtros ─────────────────────────────────────────────────
-col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
-
-with col_f1:
-    today = NOW_CHILE.date()
-    date_range = st.date_input(
-        "📅 Rango de fechas",
-        value=(today, today),
-        max_value=today,
-        min_value=today - timedelta(days=7),
-    )
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
+# ── Sidebar ─────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">🚛 Drivin Dashboard<br>Bimbo Ideal</div>',unsafe_allow_html=True)
+    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador"],label_visibility="collapsed")
+    st.divider()
+    st.markdown("**🔍 Filtros**")
+    today=NOW_CHILE.date()
+    if page=="📈 Tendencias":
+        f_dates=st.date_input("📅 Rango de fechas",value=(today-timedelta(days=6),today),max_value=today,min_value=today-timedelta(days=7))
     else:
-        start_date = end_date = today
+        f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today,min_value=today-timedelta(days=7))
+    if isinstance(f_dates,tuple) and len(f_dates)==2: start_d,end_d=f_dates
+    else: start_d=end_d=today
 
-df = load_data_from_api(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+# Load data
+df_all=load_data(start_d.strftime("%Y-%m-%d"),end_d.strftime("%Y-%m-%d"))
+if df_all.empty:
+    st.warning("⚠️ Sin datos. Verifica API Key en Settings → Secrets."); st.stop()
 
-if df.empty:
-    st.warning("⚠️ No hay datos disponibles. Verifica tu API Key en Secrets de Streamlit Cloud.")
-    st.info('Ve a **Settings → Secrets** y agrega:\n```\nDRIVIN_API_KEY = "tu_api_key"\n```')
-    st.stop()
+# Centro de venta filter (global)
+with st.sidebar:
+    centros=["Todos"]+sorted(df_all["schema_name"].dropna().unique().tolist())
+    f_centro=st.selectbox("🏭 Centro de venta",centros)
 
-with col_f2:
-    centros = ["Todos"] + sorted(df["schema_name"].dropna().unique().tolist())
-    centro_sel = st.selectbox("🏭 Centro de venta", centros)
+df=df_all.copy()
+if f_centro!="Todos": df=df[df["schema_name"]==f_centro]
 
-with col_f3:
-    codigos_sala = ["— Sin filtro —"] + sorted(df["address_code"].dropna().unique().tolist())
-    sala_sel = st.selectbox("🏪 Código sala (zoom detalle)", codigos_sala)
+# Page-specific filters
+with st.sidebar:
+    if page=="🚗 Monitoreo Flota":
+        ops=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
+        f_op=st.selectbox("🚚 Operador",ops)
+        f_estado=st.selectbox("📍 Estado",["Todos","En ruta","Finalizada","Sin iniciar"])
+    elif page=="📦 Status Entregas":
+        salas_list=["— Todas —"]+sorted(df["address_code"].dropna().unique().tolist())
+        f_sala=st.selectbox("🏪 Sala (muestra camión completo)",salas_list)
+        vehs=["Todos"]+sorted(df["vehicle_code"].dropna().unique().tolist())
+        f_veh=st.selectbox("🚛 Vehículo",vehs)
+        ops2=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
+        f_op2=st.selectbox("🚚 Operador",ops2)
+        motivos_l=["Todos"]+sorted(df["reason"].replace("-",pd.NA).dropna().unique().tolist())
+        f_motivo=st.selectbox("📋 Motivo",motivos_l)
+    elif page=="💰 CxS por Camión":
+        ops3=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
+        f_op3=st.selectbox("🚚 Operador",ops3)
+        f_vuelta=st.selectbox("🔄 Vuelta",["Todas","Primera vuelta","Segunda vuelta"])
+    elif page=="📊 Rendimiento Operador":
+        ops4=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
+        f_op4=st.selectbox("🚚 Operador",ops4)
 
-if centro_sel != "Todos":
-    df = df[df["schema_name"] == centro_sel]
+    st.divider()
+    st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
 
-# ── KPIs ────────────────────────────────────────────────────
-total_entregas = len(df)
-entregas_realizadas = ((df["status"] == "approved") | (df["status"] == "partial")).sum()
-otd_pct = round(entregas_realizadas / total_entregas * 100, 1) if total_entregas else 0
-otif_si = (df["otif"] == "Si").sum()
-otif_pct = round(otif_si / total_entregas * 100, 1) if total_entregas else 0
-rechazos = (df["status"] == "rejected").sum()
-parciales = (df["status"] == "partial").sum()
-total_bultos = int(df["units_1"].sum())
-total_venta = int(df["units_2"].sum())
-
-vehiculos = df.drop_duplicates(subset=["vehicle_code"])
-sin_iniciar = ((vehiculos["route_is_started"] == False) & (vehiculos["route_is_finished"] == False)).sum()
-
-started_times = df.dropna(subset=["route_started_at"]).drop_duplicates("vehicle_code")
-if not started_times.empty:
-    def to_chile_minutes(dt_str):
+# ── KPI Calculations ────────────────────────────────────────
+total_ent=len(df)
+realizadas=((df["status"]=="approved")|(df["status"]=="partial")).sum()
+otd=round(realizadas/total_ent*100,1) if total_ent else 0
+otif_si=(df["otif"]=="Si").sum()
+otif_pct=round(otif_si/total_ent*100,1) if total_ent else 0
+rechazos=(df["status"]=="rejected").sum()
+parciales=(df["status"]=="partial").sum()
+total_bultos=int(df["units_1"].sum())
+total_venta=int(df["units_2"].sum())
+vehiculos_u=df.drop_duplicates("vehicle_code")
+sin_iniciar=((vehiculos_u["route_is_started"]==False)&(vehiculos_u["route_is_finished"]==False)).sum()
+started=df.dropna(subset=["route_started_at"]).drop_duplicates("vehicle_code")
+if not started.empty:
+    def _tcm(s):
         try:
-            dt = pd.to_datetime(dt_str)
-            if dt.tzinfo is None:
-                dt = dt.tz_localize("UTC")
-            dt_chile = dt.astimezone(TZ_CHILE)
-            return dt_chile.hour * 60 + dt_chile.minute
-        except Exception:
-            return None
-    mins = started_times["route_started_at"].apply(to_chile_minutes).dropna()
-    if not mins.empty:
-        avg_min = int(mins.mean())
-        hr_prom = f"{avg_min // 60:02d}:{avg_min % 60:02d}"
+            dt=pd.to_datetime(s);
+            if dt.tzinfo is None: dt=dt.tz_localize("UTC")
+            c=dt.astimezone(TZ_CHILE); return c.hour*60+c.minute
+        except: return None
+    mins=started["route_started_at"].apply(_tcm).dropna()
+    hr_prom=f"{int(mins.mean())//60:02d}:{int(mins.mean())%60:02d}" if not mins.empty else "-"
+else: hr_prom="-"
+
+# ════════════════════════════════════════════════════════════
+# PAGE: INICIO
+# ════════════════════════════════════════════════════════════
+if page=="🏠 Inicio":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🏠 Dashboard Operacional — {start_d.strftime("%d/%m/%Y")}</h2>',unsafe_allow_html=True)
+    k1,k2,k3,k4=st.columns(4)
+    k1.metric("📦 Entregas",f"{total_ent:,}")
+    k2.metric("🚚 OTD",f"{otd}%")
+    k3.metric("✅ OTIF",f"{otif_pct}%")
+    k4.metric("🕐 Hr Prom. Inicio",hr_prom)
+    k5,k6,k7,k8=st.columns(4)
+    k5.metric("❌ Rechazos",rechazos)
+    k6.metric("⚠️ Parciales",parciales)
+    k7.metric("📦 Bultos",f"{total_bultos:,}")
+    k8.metric("💰 Venta Total",f"${total_venta:,}")
+
+    st.divider()
+    st.markdown(f'<div class="section-title">🔔 Alertas del Día</div>',unsafe_allow_html=True)
+
+    # Alerta: rutas sin iniciar pasadas las 7AM
+    if NOW_CHILE.hour>=ALERTA_HR_INICIO and sin_iniciar>0:
+        st.markdown(f'<div class="alerta-box">🔴 {sin_iniciar} ruta(s) sin iniciar (ya pasaron las {ALERTA_HR_INICIO}:00 AM) de {len(vehiculos_u)} vehículos</div>',unsafe_allow_html=True)
+    elif sin_iniciar>0:
+        st.markdown(f'<div class="alerta-yellow">⚠️ {sin_iniciar} ruta(s) sin iniciar de {len(vehiculos_u)} vehículos</div>',unsafe_allow_html=True)
+
+    # Alerta: camiones con más de 90 min en sala
+    en_sala_larga=df[(df["tracked_service_time"].notna())&(df["tracked_service_time"]>ALERTA_MIN_SALA)&(~df["status"].isin(["approved","rejected","partial"]))].drop_duplicates(["vehicle_code","address_code"])
+    if not en_sala_larga.empty:
+        st.markdown(f'<div class="alerta-box">⏱️ {len(en_sala_larga)} camión(es) con más de {ALERTA_MIN_SALA} min en sala:</div>',unsafe_allow_html=True)
+        for _,r in en_sala_larga.iterrows():
+            st.markdown(f"&nbsp;&nbsp;&nbsp;🚛 **{r['vehicle_code']}** → Sala {r['address_code']} ({r['address_name'][:25]}) — **{int(r['tracked_service_time'])} min**")
+
+    # Alerta: salas con rechazos
+    rech_df=df[df["status"]=="rejected"]
+    if not rech_df.empty:
+        st.markdown(f'<div class="alerta-yellow">❌ {len(rech_df)} rechazo(s) del día:</div>',unsafe_allow_html=True)
+        for _,r in rech_df.iterrows():
+            st.markdown(f"&nbsp;&nbsp;&nbsp;Sala {r['address_code']} ({r['address_name'][:25]}) — Motivo: {r['reason']}")
+
+    # Alerta: segunda vuelta con Max Cube < 50%
+    fletes,caps=load_vehicle_info()
+    df_2da=df[df["trip_number"]==2].copy()
+    if not df_2da.empty:
+        v2=df_2da.groupby("vehicle_code").agg(bultos=("units_1","sum")).reset_index()
+        v2["cap"]=v2["vehicle_code"].map(caps).fillna(0)
+        v2["mc"]=v2.apply(lambda r:round(r["bultos"]/r["cap"]*100) if r["cap"]>0 else 0,axis=1)
+        low_mc=v2[v2["mc"]<50]
+        if not low_mc.empty:
+            st.markdown(f'<div class="alerta-yellow">📦 {len(low_mc)} segunda(s) vuelta con Max Cube &lt; 50%:</div>',unsafe_allow_html=True)
+            for _,r in low_mc.iterrows():
+                st.markdown(f"&nbsp;&nbsp;&nbsp;🚛 **{r['vehicle_code']}** — {r['bultos']} bultos / {int(r['cap'])} cap. = **{r['mc']}%**")
+
+    # Alerta: operadores con CxS sobre promedio
+    if fletes:
+        df_cxs_a=df.copy(); df_cxs_a["flete"]=df_cxs_a["vehicle_code"].map(fletes).fillna(0)
+        op_a=df_cxs_a.groupby("employer_name").agg(v=("units_2","sum"),f=("flete","sum")).reset_index()
+        op_a=op_a[op_a["employer_name"]!="-"]
+        op_a["cxs"]=op_a.apply(lambda r:round(r["f"]/r["v"]*100,2) if r["v"]>0 else 0,axis=1)
+        avg_cxs=op_a["cxs"].mean()
+        high_cxs=op_a[op_a["cxs"]>avg_cxs*1.2]  # 20% above average
+        if not high_cxs.empty and avg_cxs>0:
+            st.markdown(f'<div class="alerta-blue">💰 Operadores con CxS sobre promedio ({round(avg_cxs,2)}%):</div>',unsafe_allow_html=True)
+            for _,r in high_cxs.iterrows():
+                st.markdown(f"&nbsp;&nbsp;&nbsp;**{r['employer_name']}** — CxS: **{r['cxs']}%**")
+
+    if sin_iniciar==0 and en_sala_larga.empty and rech_df.empty:
+        st.success("✅ Sin alertas por el momento")
+
+# ════════════════════════════════════════════════════════════
+# PAGE: MONITOREO FLOTA
+# ════════════════════════════════════════════════════════════
+elif page=="🚗 Monitoreo Flota":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🚗 Monitoreo de Flota</h2>',unsafe_allow_html=True)
+    ub=ubicacion_vehiculos(df)
+    dv=df.drop_duplicates("vehicle_code").copy()
+    dv["estado"]=dv.apply(lambda r:"Finalizada" if r["route_is_finished"] else("En ruta" if r["route_is_started"] else "Sin iniciar"),axis=1)
+    dv["ubicacion"]=dv["vehicle_code"].map(ub).fillna("-")
+    dv["hr_inicio"]=dv["route_started_at"].apply(parse_hour_chile)
+    dv["hr_fin"]=dv["route_finished_at"].apply(parse_hour_chile)
+    # Filters
+    if f_op!="Todos": dv=dv[dv["employer_name"]==f_op]
+    if f_estado!="Todos": dv=dv[dv["estado"]==f_estado]
+    # KPIs
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("🚛 Vehículos",len(dv))
+    c2.metric("✅ Finalizadas",(dv["estado"]=="Finalizada").sum())
+    c3.metric("🔵 En ruta",(dv["estado"]=="En ruta").sum())
+    c4.metric("🔴 Sin iniciar",(dv["estado"]=="Sin iniciar").sum())
+    ds=dv[["vehicle_code","driver_name","employer_name","schema_name","estado","ubicacion","hr_inicio","hr_fin"]].copy()
+    ds.columns=["Vehículo","Conductor","Operador","Centro","Estado","Ubicación Actual","Inicio","Fin"]
+    st.dataframe(ds.sort_values("Estado").style.map(color_estado,subset=["Estado"]).map(color_ubicacion,subset=["Ubicación Actual"]),use_container_width=True,hide_index=True,height=600)
+
+# ════════════════════════════════════════════════════════════
+# PAGE: STATUS ENTREGAS
+# ════════════════════════════════════════════════════════════
+elif page=="📦 Status Entregas":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📦 Status de Entregas</h2>',unsafe_allow_html=True)
+    df_e=df.copy()
+    # Smart sala filter: show sala + all salas from same vehicle
+    if f_sala!="— Todas —":
+        vehs_sala=df_e[df_e["address_code"]==f_sala]["vehicle_code"].unique()
+        df_e=df_e[df_e["vehicle_code"].isin(vehs_sala)]
+        st.info(f"Mostrando sala {f_sala} + todas las salas de su(s) camión(es): {', '.join(vehs_sala)}")
+    if f_veh!="Todos": df_e=df_e[df_e["vehicle_code"]==f_veh]
+    if f_op2!="Todos": df_e=df_e[df_e["employer_name"]==f_op2]
+    if f_motivo!="Todos": df_e=df_e[df_e["reason"]==f_motivo]
+    df_e["ubicacion"]=ubicacion_por_sala(df_e)
+    # KPIs
+    c1,c2,c3,c4=st.columns(4)
+    c1.metric("📦 Entregas",len(df_e))
+    otd_e=round(((df_e["status"]=="approved")|(df_e["status"]=="partial")).sum()/len(df_e)*100,1) if len(df_e) else 0
+    c2.metric("🚚 OTD",f"{otd_e}%")
+    c3.metric("📦 Bultos",f"{int(df_e['units_1'].sum()):,}")
+    c4.metric("💰 Venta",f"${int(df_e['units_2'].sum()):,}")
+    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
+    ds.columns=["Código","Sala","Vehículo","Conductor","Operador","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
+    for c in ["Espera Última","Espera Total"]: ds[c]=ds[c].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else "-")
+    ds["Pasadas"]=ds["Pasadas"].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else 1)
+    ds["Venta Total"]=ds["Venta Total"].apply(lambda x:f"${x:,}" if x>0 else "-")
+    ds=ds.fillna("-")
+    st.dataframe(ds.style.map(color_status,subset=["Status"]).map(color_ubicacion,subset=["Ubicación"]).map(color_vuelta,subset=["Viaje"]),use_container_width=True,hide_index=True,height=600)
+    # Motivos chart
+    rd=df_e[df_e["reason"]!="-"]["reason"].value_counts().reset_index(); rd.columns=["Motivo","Cantidad"]
+    if not rd.empty:
+        st.markdown('<div class="section-title">📊 Distribución de motivos</div>',unsafe_allow_html=True)
+        fig=px.bar(rd,x="Cantidad",y="Motivo",orientation="h",text="Cantidad",color="Cantidad",color_continuous_scale=[[0,BIMBO_CELESTE],[1,BIMBO_BLUE]])
+        fig.update_layout(**PLOTLY_BASE,height=300,showlegend=False); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
+        st.plotly_chart(fig,use_container_width=True)
+
+# ════════════════════════════════════════════════════════════
+# PAGE: RANKING SALAS
+# ════════════════════════════════════════════════════════════
+elif page=="🏆 Ranking Salas":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🏆 Ranking Salas — Tiempo de Espera GPS</h2>',unsafe_allow_html=True)
+    dt=df[df["espera_total_sala"].notna()&(df["espera_total_sala"]>0)].copy()
+    if dt.empty: st.info("Sin datos de espera GPS.")
     else:
-        hr_prom = "-"
-else:
-    hr_prom = "-"
+        dd=dt.drop_duplicates(["address_code","planned_date"])[["address_code","address_name","planned_date","espera_max_sala","espera_total_sala","visitas_gps"]]
+        sa=dd.groupby(["address_code","address_name"]).agg(total=("espera_total_sala","max"),mayor=("espera_max_sala","max"),pasadas=("visitas_gps","max")).reset_index().sort_values("total",ascending=False).head(15)
+        sa["total"]=sa["total"].astype(int); sa["mayor"]=sa["mayor"].astype(int); sa["pasadas"]=sa["pasadas"].astype(int)
+        fig=px.bar(sa,x="total",y="address_name",orientation="h",text="total",color="total",color_continuous_scale=[[0,BIMBO_CELESTE],[.5,BIMBO_BLUE],[1,BIMBO_RED]],labels={"total":"Espera Total (min)","address_name":"Sala"})
+        fig.update_layout(**PLOTLY_BASE,height=450,showlegend=False,yaxis=dict(autorange="reversed")); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
+        st.plotly_chart(fig,use_container_width=True)
+        ss=sa[["address_code","address_name","total","mayor","pasadas"]].copy(); ss.columns=["Código","Sala","Espera Total","Espera Mayor","Pasadas GPS"]
+        st.dataframe(ss,use_container_width=True,hide_index=True)
 
-k1, k2, k3, k4, k5, k6, k7, k8 = st.columns(8)
-k1.metric("📦 Entregas", f"{total_entregas:,}")
-k2.metric("🚚 OTD", f"{otd_pct}%")
-k3.metric("✅ OTIF", f"{otif_pct}%")
-k4.metric("❌ Rechazos", rechazos)
-k5.metric("⚠️ Parciales", parciales)
-k6.metric("📦 Bultos", f"{total_bultos:,}")
-k7.metric("💰 Venta Total", f"${total_venta:,}")
-k8.metric("🕐 Hr Inicio", hr_prom)
+# ════════════════════════════════════════════════════════════
+# PAGE: TENDENCIAS
+# ════════════════════════════════════════════════════════════
+elif page=="📈 Tendencias":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📈 Tendencias</h2>',unsafe_allow_html=True)
+    dt=df.copy(); dt["fecha"]=pd.to_datetime(dt["planned_date"])
+    bd=dt.groupby("fecha")["units_1"].sum().reset_index(); bd.columns=["Fecha","Bultos"]
+    od=dt.groupby("fecha").apply(lambda x:round((x["otif"]=="Si").sum()/len(x)*100,1) if len(x) else 0).reset_index(); od.columns=["Fecha","OTIF %"]
+    td=dt.groupby("fecha").apply(lambda x:round(((x["status"]=="approved")|(x["status"]=="partial")).sum()/len(x)*100,1) if len(x) else 0).reset_index(); td.columns=["Fecha","OTD %"]
+    fig=go.Figure(data=[
+        go.Scatter(x=bd["Fecha"],y=bd["Bultos"],name="Bultos",mode="lines+markers",line=dict(color=BIMBO_CELESTE,width=3),marker=dict(size=8)),
+        go.Scatter(x=td["Fecha"],y=td["OTD %"],name="OTD %",mode="lines+markers",line=dict(color=BIMBO_BLUE,width=3),marker=dict(size=8),yaxis="y2"),
+        go.Scatter(x=od["Fecha"],y=od["OTIF %"],name="OTIF %",mode="lines+markers",line=dict(color=BIMBO_GREEN,width=3),marker=dict(size=8),yaxis="y2"),
+    ],layout=go.Layout(**PLOTLY_BASE,height=400,margin=dict(l=60,r=60,t=30,b=40),
+        xaxis=dict(dtick="D1",tickformat="%d/%m/%Y"),
+        yaxis=dict(title=dict(text="Bultos",font=dict(color=BIMBO_CELESTE)),tickfont=dict(color=BIMBO_CELESTE),side="left"),
+        yaxis2=dict(title=dict(text="OTD / OTIF %",font=dict(color=BIMBO_BLUE)),tickfont=dict(color=BIMBO_BLUE),side="right",overlaying="y",range=[0,100]),
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1)))
+    st.plotly_chart(fig,use_container_width=True)
+    st.markdown('<div class="section-title">🏭 Entregas por Centro</div>',unsafe_allow_html=True)
+    ec=df.groupby("schema_name").agg(ent=("order_code","count"),otd=("status",lambda x:round(((x=="approved")|(x=="partial")).sum()/len(x)*100,1)),otif=("otif",lambda x:round((x=="Si").sum()/len(x)*100,1)),bul=("units_1","sum"),ven=("units_2","sum")).reset_index().sort_values("ent",ascending=False)
+    ec["bul"]=ec["bul"].astype(int); ec["ven"]=ec["ven"].apply(lambda x:f"${int(x):,}")
+    ec.columns=["Centro","Entregas","OTD %","OTIF %","Bultos","Venta"]
+    st.dataframe(ec,use_container_width=True,hide_index=True)
 
-if sin_iniciar > 0:
-    st.markdown(
-        f'<div class="alerta-box">⚠️ {sin_iniciar} ruta(s) sin iniciar de {len(vehiculos)} vehículos</div>',
-        unsafe_allow_html=True,
-    )
+# ════════════════════════════════════════════════════════════
+# PAGE: CxS POR CAMIÓN
+# ════════════════════════════════════════════════════════════
+elif page=="💰 CxS por Camión":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">💰 Costo por Servir (CxS)</h2>',unsafe_allow_html=True)
+    fletes,caps=load_vehicle_info()
+    dc=df.copy(); dc["flete"]=dc["vehicle_code"].map(fletes).fillna(0).astype(int); dc["capacidad"]=dc["vehicle_code"].map(caps).fillna(0).astype(int)
+    va=dc.groupby(["vehicle_code","trip_number"]).agg(conductor=("driver_name","first"),operador=("employer_name","first"),centro=("schema_name","first"),salas=("address_code","nunique"),bultos=("units_1","sum"),venta=("units_2","sum"),flete=("flete","max"),capacidad=("capacidad","max")).reset_index()
+    va["tipo_viaje"]=va["trip_number"].apply(lambda x:"Primera vuelta" if x==1 else "Segunda vuelta")
+    va["max_cube"]=va.apply(lambda r:round(r["bultos"]/r["capacidad"]*100) if r["capacidad"]>0 else 0,axis=1)
+    va["cxs_pct"]=va.apply(lambda r:round(r["flete"]/r["venta"]*100,2) if r["venta"]>0 else 0,axis=1)
+    # Filters
+    if f_op3!="Todos": va=va[va["operador"]==f_op3]
+    if f_vuelta!="Todas": va=va[va["tipo_viaje"]==f_vuelta]
+    va=va.sort_values("cxs_pct",ascending=False)
+    tf=int(va["flete"].sum()); tv=int(va["venta"].sum())
+    cg=round(tf/tv*100,2) if tv else 0; amc=round(va["max_cube"].mean()) if not va.empty else 0
+    c1,c2,c3,c4,c5,c6=st.columns(6)
+    c1.metric("💰 CxS Global",f"{cg}%"); c2.metric("📦 Max Cube Prom.",f"{amc}%"); c3.metric("🚛 Camiones",va["vehicle_code"].nunique())
+    c4.metric("🔄 Viajes",len(va)); c5.metric("⚠️ 2das Vueltas",int((va["trip_number"]==2).sum())); c6.metric("📦 Flete Total",f"${tf:,}")
+    sf=(va["flete"]==0).sum()
+    if sf>0: st.markdown(f'<div class="alerta-yellow">⚠️ {sf} viaje(s) sin flete configurado</div>',unsafe_allow_html=True)
+    st.divider()
+    vs=va[["vehicle_code","conductor","operador","centro","tipo_viaje","salas","bultos","max_cube","venta","flete","cxs_pct"]].copy()
+    vs["bultos"]=vs["bultos"].astype(int); vs["max_cube"]=vs["max_cube"].apply(lambda x:f"{x}%"); vs["venta"]=vs["venta"].apply(lambda x:f"${int(x):,}")
+    vs["flete"]=vs["flete"].apply(lambda x:f"${int(x):,}" if x>0 else "Sin flete"); vs["cxs_pct"]=vs["cxs_pct"].apply(lambda x:f"{x}%")
+    vs.columns=["Vehículo","Conductor","Operador","Centro","Vuelta","Salas","Bultos","Max Cube","Venta","Flete","CxS %"]
+    st.dataframe(vs.style.map(color_vuelta,subset=["Vuelta"]).map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube"]),use_container_width=True,hide_index=True,height=600)
+    st.divider()
+    st.markdown('<div class="section-title">📊 Resumen del Día</div>',unsafe_allow_html=True)
+    r1,r2,r3=st.columns(3); r1.metric("Venta Total",f"${tv:,}"); r2.metric("Flete Total",f"${tf:,}"); r3.metric("CxS Total",f"{cg}%")
+    st.markdown('<div class="section-title">🏭 CxS por Operador</div>',unsafe_allow_html=True)
+    oa=va.groupby("operador").agg(cam=("vehicle_code","nunique"),viajes=("vehicle_code","count"),venta=("venta","sum"),flete=("flete","sum")).reset_index()
+    oa["cxs"]=oa.apply(lambda r:round(r["flete"]/r["venta"]*100,2) if r["venta"]>0 else 0,axis=1)
+    oa["venta"]=oa["venta"].apply(lambda x:f"${int(x):,}"); oa["flete"]=oa["flete"].apply(lambda x:f"${int(x):,}"); oa["cxs"]=oa["cxs"].apply(lambda x:f"{x}%")
+    oa.columns=["Operador","Camiones","Viajes","Venta","Flete","CxS %"]
+    st.dataframe(oa,use_container_width=True,hide_index=True)
 
-st.divider()
-
-# ── Vista condicional ───────────────────────────────────────
-if sala_sel != "— Sin filtro —":
-    df_sala = df[df["address_code"] == sala_sel]
-
-    if df_sala.empty:
-        st.warning(f"No hay datos para la sala {sala_sel} en este rango de fechas.")
-    else:
-        nombre_sala = df_sala["address_name"].iloc[0]
-        ciudad = df_sala["address_city"].iloc[0] if "address_city" in df_sala.columns else "-"
-
-        st.markdown(f'<div class="section-title">🏪 Detalle Sala: {sala_sel} — {nombre_sala}</div>', unsafe_allow_html=True)
-        if ciudad and ciudad != "-":
-            st.caption(f"📍 {ciudad}")
-
-        s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
-        total_sala = len(df_sala)
-        realizadas_sala = ((df_sala["status"] == "approved") | (df_sala["status"] == "partial")).sum()
-        otd_sala = round(realizadas_sala / total_sala * 100, 1) if total_sala else 0
-        otif_sala = (df_sala["otif"] == "Si").sum()
-        otif_pct_sala = round(otif_sala / total_sala * 100, 1) if total_sala else 0
-        rechazos_sala = (df_sala["status"] == "rejected").sum()
-        bultos_sala = int(df_sala["units_1"].sum())
-        venta_sala = int(df_sala["units_2"].sum())
-        espera_max_vals = df_sala["espera_max_sala"].dropna()
-        espera_total_vals = df_sala["espera_total_sala"].dropna()
-        max_espera_sala = int(espera_max_vals.max()) if not espera_max_vals.empty else 0
-        total_espera_sala = int(espera_total_vals.max()) if not espera_total_vals.empty else 0
-        n_pasadas = int(df_sala["visitas_gps"].max()) if not df_sala["visitas_gps"].dropna().empty else 1
-
-        s1.metric("Visitas", total_sala)
-        s2.metric("OTD", f"{otd_sala}%")
-        s3.metric("OTIF", f"{otif_pct_sala}%")
-        s4.metric("Bultos", f"{bultos_sala:,}")
-        s5.metric("Venta", f"${venta_sala:,}")
-        s6.metric("⏱️ Espera Total", f"{total_espera_sala} min")
-        s7.metric("🔄 Pasadas GPS", f"{n_pasadas}")
-
-        st.markdown('<div class="section-title">📋 Historial de visitas</div>', unsafe_allow_html=True)
-        if n_pasadas > 1:
-            st.caption(f"⚠️ Se detectaron {n_pasadas} pasadas GPS distintas. Espera Total = suma de todas las pasadas.")
-
-        df_show = df_sala[["planned_date", "driver_name", "employer_name", "vehicle_code", "tipo_viaje", "units_1",
-                           "units_2", "status_display", "reason", "otif", "near_pod",
-                           "tracked_service_time", "espera_total_sala", "visitas_gps"]].copy()
-        df_show.columns = ["Fecha", "Conductor", "Operador Logístico", "Vehículo", "Tipo Viaje", "Bultos",
-                           "Venta Total", "Status", "Motivo", "OTIF", "Near POD",
-                           "Espera Última (min)", "Espera Total (min)", "Pasadas GPS"]
-        for col_esp in ["Espera Última (min)", "Espera Total (min)"]:
-            df_show[col_esp] = df_show[col_esp].apply(
-                lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
-        df_show["Pasadas GPS"] = df_show["Pasadas GPS"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else 1)
-        df_show["Venta Total"] = df_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
-        df_show = df_show.fillna("-")
-
-        st.dataframe(
-            df_show.style.map(color_status_light, subset=["Status"])
-                         .map(color_tipo_viaje, subset=["Tipo Viaje"]),
-            use_container_width=True,
-            hide_index=True,
-            height=400,
-        )
-
-        if not tiempos.empty:
-            st.markdown('<div class="section-title">⏱️ Tiempo de espera GPS por visita</div>', unsafe_allow_html=True)
-            df_chart = df_sala[["planned_date", "tracked_service_time", "driver_name"]].dropna(subset=["tracked_service_time"])
-            fig = px.bar(
-                df_chart, x="planned_date", y="tracked_service_time", color="driver_name",
-                labels={"tracked_service_time": "Minutos", "planned_date": "Fecha", "driver_name": "Conductor"},
-                color_discrete_sequence=[BIMBO_BLUE, BIMBO_CELESTE, "#0ea5e9", "#7dd3fc"],
-            )
-            fig.update_layout(**PLOTLY_LAYOUT, height=350)
-            fig.update_xaxes(dtick="D1", tickformat="%d/%m")
-            st.plotly_chart(fig, use_container_width=True)
-
-else:
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🚗 Vehículos", "📦 Status Entregas", "🏆 Ranking Salas", "📈 Tendencias", "💰 CxS por Camión"
-    ])
-
-    with tab1:
-        st.markdown('<div class="section-title">🚗 Estado de sesión por vehículo</div>', unsafe_allow_html=True)
-
-        # Calcular ubicación actual de cada vehículo
-        ubicaciones = calcular_ubicacion_vehiculos(df)
-
-        df_veh = df.drop_duplicates(subset=["vehicle_code"]).copy()
-        df_veh["estado"] = df_veh.apply(
-            lambda r: "Finalizada" if r["route_is_finished"]
-            else ("En ruta" if r["route_is_started"] else "Sin iniciar"),
-            axis=1,
-        )
-        df_veh["ubicacion"] = df_veh["vehicle_code"].map(ubicaciones).fillna("-")
-        df_veh["hr_inicio"] = df_veh["route_started_at"].apply(parse_hour_chile)
-        df_veh["hr_fin"] = df_veh["route_finished_at"].apply(parse_hour_chile)
-
-        df_veh_show = df_veh[["vehicle_code", "driver_name", "employer_name", "schema_name", "estado", "ubicacion", "hr_inicio", "hr_fin"]].copy()
-        df_veh_show.columns = ["Vehículo", "Conductor", "Operador Logístico", "Centro", "Estado", "Ubicación Actual", "Inicio", "Fin"]
-        df_veh_show = df_veh_show.fillna("-")
-
-        def color_estado_light(val):
-            if val == "Finalizada":
-                return "background-color: #dcfce7; color: #166534"
-            elif val == "En ruta":
-                return "background-color: #dbeafe; color: #1e40af"
-            elif val == "Sin iniciar":
-                return "background-color: #fee2e2; color: #991b1b"
-            return ""
-
-        st.dataframe(
-            df_veh_show.sort_values("Estado")
-                .style.map(color_estado_light, subset=["Estado"])
-                .map(color_ubicacion, subset=["Ubicación Actual"]),
-            use_container_width=True,
-            hide_index=True,
-            height=500,
-        )
-
-    with tab2:
-        st.markdown('<div class="section-title">📦 Detalle de entregas por sala</div>', unsafe_allow_html=True)
-
-        motivos_list = df["reason"].replace("-", pd.NA).dropna().unique().tolist()
-        motivos = ["Todos"] + sorted(motivos_list)
-        motivo_sel = st.selectbox("Filtrar por motivo", motivos)
-
-        df_ent = df.copy()
-        if motivo_sel != "Todos":
-            df_ent = df_ent[df_ent["reason"] == motivo_sel]
-
-        # Agregar ubicación por sala (no por vehículo)
-        df_ent["ubicacion"] = calcular_ubicacion_por_sala(df_ent)
-
-        df_ent_show = df_ent[["address_code", "address_name", "vehicle_code", "driver_name",
-                              "employer_name", "ubicacion", "tipo_viaje", "units_1", "units_2",
-                              "status_display", "reason",
-                              "otif", "near_pod", "tracked_service_time",
-                              "espera_total_sala", "visitas_gps"]].copy()
-        df_ent_show.columns = ["Código", "Sala", "Vehículo", "Conductor",
-                               "Operador Logístico", "Ubicación Actual", "Tipo Viaje",
-                               "Bultos", "Venta Total", "Status", "Motivo",
-                               "OTIF", "Near POD", "Espera Última",
-                               "Espera Total", "Pasadas GPS"]
-        for col_esp in ["Espera Última", "Espera Total"]:
-            df_ent_show[col_esp] = df_ent_show[col_esp].apply(
-                lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else "-")
-        df_ent_show["Pasadas GPS"] = df_ent_show["Pasadas GPS"].apply(
-            lambda x: int(x) if pd.notna(x) and str(x) not in ("-", "") else 1)
-        df_ent_show["Venta Total"] = df_ent_show["Venta Total"].apply(lambda x: f"${x:,}" if x > 0 else "-")
-        df_ent_show = df_ent_show.fillna("-")
-
-        st.dataframe(
-            df_ent_show.style.map(color_status_light, subset=["Status"])
-                             .map(color_tipo_viaje, subset=["Tipo Viaje"])
-                             .map(color_ubicacion, subset=["Ubicación Actual"]),
-            use_container_width=True,
-            hide_index=True,
-            height=500,
-        )
-
-        st.markdown('<div class="section-title">📊 Distribución de motivos</div>', unsafe_allow_html=True)
-        reason_data = df[df["reason"] != "-"]["reason"].value_counts().reset_index()
-        reason_data.columns = ["Motivo", "Cantidad"]
-        if not reason_data.empty:
-            fig_reasons = px.bar(
-                reason_data, x="Cantidad", y="Motivo", orientation="h",
-                color="Cantidad", color_continuous_scale=[[0, BIMBO_CELESTE], [1, BIMBO_BLUE]],
-                text="Cantidad",
-            )
-            fig_reasons.update_layout(**PLOTLY_LAYOUT, height=300, showlegend=False)
-            fig_reasons.update_traces(textposition="outside")
-            fig_reasons.update_coloraxes(showscale=False)
-            st.plotly_chart(fig_reasons, use_container_width=True)
-
-    with tab3:
-        st.markdown('<div class="section-title">🏆 Top 10 Salas con Mayor Tiempo de Espera GPS</div>', unsafe_allow_html=True)
-        st.caption("Espera Total = suma de todas las pasadas capturadas · Espera Mayor = visita individual más larga")
-
-        df_times = df[df["espera_total_sala"].notna() & (df["espera_total_sala"] > 0)].copy()
-
-        if df_times.empty:
-            st.info("No hay datos de tiempo de espera GPS para este rango.")
-        else:
-            df_sala_dia = df_times.drop_duplicates(subset=["address_code", "planned_date"])[
-                ["address_code", "address_name", "planned_date", "espera_max_sala",
-                 "espera_total_sala", "visitas_gps"]
-            ]
-            sala_agg = df_sala_dia.groupby(["address_code", "address_name"]).agg(
-                espera_total=("espera_total_sala", "max"),
-                espera_mayor=("espera_max_sala", "max"),
-                pasadas=("visitas_gps", "max"),
-                dias=("planned_date", "count"),
-            ).reset_index().sort_values("espera_total", ascending=False).head(10)
-            sala_agg["espera_total"] = sala_agg["espera_total"].astype(int)
-            sala_agg["espera_mayor"] = sala_agg["espera_mayor"].astype(int)
-            sala_agg["pasadas"] = sala_agg["pasadas"].astype(int)
-
-            fig_top = px.bar(
-                sala_agg, x="espera_total", y="address_name", orientation="h",
-                text="espera_total", color="espera_total",
-                color_continuous_scale=[[0, BIMBO_CELESTE], [0.5, BIMBO_BLUE], [1, BIMBO_RED]],
-                labels={"espera_total": "Espera Total (min)", "address_name": "Sala"},
-            )
-            fig_top.update_layout(**PLOTLY_LAYOUT, height=420, showlegend=False, yaxis=dict(autorange="reversed"))
-            fig_top.update_traces(textposition="outside")
-            fig_top.update_coloraxes(showscale=False)
-            st.plotly_chart(fig_top, use_container_width=True)
-
-            sala_show = sala_agg[["address_code", "address_name", "espera_total", "espera_mayor", "pasadas"]].copy()
-            sala_show.columns = ["Código", "Sala", "Espera Total (min)", "Espera Mayor (min)", "Pasadas GPS"]
-            st.dataframe(sala_show, use_container_width=True, hide_index=True)
-
-    with tab4:
-        st.markdown('<div class="section-title">📈 Tendencia de Bultos, OTD y OTIF por Día</div>', unsafe_allow_html=True)
-
-        df_trend = df.copy()
-        df_trend["fecha"] = pd.to_datetime(df_trend["planned_date"])
-
-        bultos_dia = df_trend.groupby("fecha")["units_1"].sum().reset_index()
-        bultos_dia.columns = ["Fecha", "Bultos"]
-
-        otif_dia = df_trend.groupby("fecha").apply(
-            lambda x: round((x["otif"] == "Si").sum() / len(x) * 100, 1) if len(x) > 0 else 0
-        ).reset_index()
-        otif_dia.columns = ["Fecha", "OTIF %"]
-
-        otd_dia = df_trend.groupby("fecha").apply(
-            lambda x: round(((x["status"] == "approved") | (x["status"] == "partial")).sum() / len(x) * 100, 1) if len(x) > 0 else 0
-        ).reset_index()
-        otd_dia.columns = ["Fecha", "OTD %"]
-
-        BIMBO_ORANGE = "#f59e0b"
-
-        fig_trend = go.Figure(
-            data=[
-                go.Scatter(
-                    x=bultos_dia["Fecha"], y=bultos_dia["Bultos"],
-                    name="Bultos", mode="lines+markers",
-                    line=dict(color=BIMBO_CELESTE, width=3),
-                    marker=dict(size=8, color=BIMBO_CELESTE),
-                ),
-                go.Scatter(
-                    x=otd_dia["Fecha"], y=otd_dia["OTD %"],
-                    name="OTD %", mode="lines+markers",
-                    line=dict(color=BIMBO_BLUE, width=3),
-                    marker=dict(size=8, color=BIMBO_BLUE),
-                    yaxis="y2",
-                ),
-                go.Scatter(
-                    x=otif_dia["Fecha"], y=otif_dia["OTIF %"],
-                    name="OTIF %", mode="lines+markers",
-                    line=dict(color=BIMBO_GREEN, width=3),
-                    marker=dict(size=8, color=BIMBO_GREEN),
-                    yaxis="y2",
-                ),
-            ],
-            layout=go.Layout(
-                template="plotly_white",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(255,255,255,1)",
-                font=dict(color="#1a1a2e", size=12),
-                margin=dict(l=60, r=60, t=30, b=40),
-                height=400,
-                xaxis=dict(dtick="D1", tickformat="%d/%m/%Y"),
-                yaxis=dict(title=dict(text="Bultos", font=dict(color=BIMBO_CELESTE)),
-                           tickfont=dict(color=BIMBO_CELESTE), side="left"),
-                yaxis2=dict(title=dict(text="OTD / OTIF %", font=dict(color=BIMBO_BLUE)),
-                            tickfont=dict(color=BIMBO_BLUE), side="right",
-                            overlaying="y", range=[0, 100]),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            ),
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
-
-        st.markdown('<div class="section-title">🏭 Entregas por Centro de Venta</div>', unsafe_allow_html=True)
-        ent_cv = df.groupby("schema_name").agg(
-            entregas=("order_code", "count"),
-            realizadas=("status", lambda x: ((x == "approved") | (x == "partial")).sum()),
-            otif_pct=("otif", lambda x: round((x == "Si").sum() / len(x) * 100, 1)),
-            bultos=("units_1", "sum"),
-            venta=("units_2", "sum"),
-        ).reset_index().sort_values("entregas", ascending=False)
-        ent_cv["otd_pct"] = (ent_cv["realizadas"] / ent_cv["entregas"] * 100).round(1)
-        ent_cv["bultos"] = ent_cv["bultos"].astype(int)
-        ent_cv["venta"] = ent_cv["venta"].apply(lambda x: f"${int(x):,}")
-        ent_cv = ent_cv[["schema_name", "entregas", "otd_pct", "otif_pct", "bultos", "venta"]]
-        ent_cv.columns = ["Centro", "Entregas", "OTD %", "OTIF %", "Bultos", "Venta Total"]
-        st.dataframe(ent_cv, use_container_width=True, hide_index=True)
-
-    # ── TAB 5: CxS por Camión ─────────────────────────────
-    with tab5:
-        st.markdown('<div class="section-title">💰 Costo por Servir (CxS) por Camión</div>', unsafe_allow_html=True)
-        st.caption("CxS = Flete / Venta · Flete obtenido de Drivin (campo KG en capacidades del vehículo)")
-
-        # Cargar fletes y capacidades desde endpoint de vehículos
-        fletes, capacidades = load_vehicle_fletes()
-
-        df_cxs = df.copy()
-
-        # Agregar flete y capacidad por vehículo
-        df_cxs["flete"] = df_cxs["vehicle_code"].map(fletes).fillna(0).astype(int)
-        df_cxs["capacidad"] = df_cxs["vehicle_code"].map(capacidades).fillna(0).astype(int)
-
-        # Agrupar por vehículo + vuelta (cada vuelta es una fila)
-        vuelta_agg = df_cxs.groupby(["vehicle_code", "trip_number"]).agg(
-            conductor=("driver_name", "first"),
-            operador=("employer_name", "first"),
-            centro=("schema_name", "first"),
-            salas=("address_code", "nunique"),
-            bultos=("units_1", "sum"),
-            venta=("units_2", "sum"),
-            flete=("flete", "max"),
-            capacidad=("capacidad", "max"),
-        ).reset_index()
-
-        # Tipo de viaje
-        vuelta_agg["tipo_viaje"] = vuelta_agg["trip_number"].apply(
-            lambda x: "Primera vuelta" if x == 1 else "Segunda vuelta")
-
-        # MAX CUBE por vuelta = bultos / capacidad
-        vuelta_agg["max_cube"] = vuelta_agg.apply(
-            lambda r: round(r["bultos"] / r["capacidad"] * 100) if r["capacidad"] > 0 else 0,
-            axis=1,
-        )
-
-        # CxS por vuelta
-        vuelta_agg["cxs_pct"] = vuelta_agg.apply(
-            lambda r: round(r["flete"] / r["venta"] * 100, 2) if r["venta"] > 0 else 0,
-            axis=1,
-        )
-
-        # Ordenar de mayor a menor CxS
-        vuelta_agg = vuelta_agg.sort_values("cxs_pct", ascending=False)
-
-        # KPIs generales
-        total_flete = int(vuelta_agg["flete"].sum())
-        total_venta_cxs = int(vuelta_agg["venta"].sum())
-        cxs_global = round(total_flete / total_venta_cxs * 100, 2) if total_venta_cxs > 0 else 0
-        total_camiones = vuelta_agg["vehicle_code"].nunique()
-        total_vueltas = len(vuelta_agg)
-        vueltas_2da = (vuelta_agg["trip_number"] == 2).sum()
-        sin_flete = (vuelta_agg["flete"] == 0).sum()
-        avg_max_cube = round(vuelta_agg["max_cube"].mean()) if not vuelta_agg.empty else 0
-
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("💰 CxS Global", f"{cxs_global}%")
-        c2.metric("📦 Max Cube Prom.", f"{avg_max_cube}%")
-        c3.metric("🚛 Camiones", total_camiones)
-        c4.metric("🔄 Total Viajes", total_vueltas)
-        c5.metric("⚠️ 2das Vueltas", int(vueltas_2da))
-        c6.metric("📦 Flete Total", f"${total_flete:,}")
-
-        if sin_flete > 0:
-            st.markdown(
-                f'<div class="alerta-box">⚠️ {sin_flete} viaje(s) sin flete configurado en Drivin (campo KG = 0)</div>',
-                unsafe_allow_html=True,
-            )
-
+# ════════════════════════════════════════════════════════════
+# PAGE: RENDIMIENTO OPERADOR
+# ════════════════════════════════════════════════════════════
+elif page=="📊 Rendimiento Operador":
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📊 Rendimiento por Operador Logístico</h2>',unsafe_allow_html=True)
+    fletes,caps=load_vehicle_info()
+    dr=df.copy(); dr["flete"]=dr["vehicle_code"].map(fletes).fillna(0).astype(int); dr["capacidad"]=dr["vehicle_code"].map(caps).fillna(0).astype(int)
+    if f_op4!="Todos": dr=dr[dr["employer_name"]==f_op4]
+    ops=dr[dr["employer_name"]!="-"].groupby("employer_name")
+    rows=[]
+    for op,g in ops:
+        n_cam=g["vehicle_code"].nunique(); n_ent=len(g); n_bul=int(g["units_1"].sum()); n_ven=int(g["units_2"].sum())
+        n_rech=(g["status"]=="rejected").sum()
+        otd_o=round(((g["status"]=="approved")|(g["status"]=="partial")).sum()/n_ent*100,1) if n_ent else 0
+        otif_o=round((g["otif"]=="Si").sum()/n_ent*100,1) if n_ent else 0
+        flete_t=int(g.drop_duplicates(["vehicle_code","trip_number"])["flete"].sum())
+        cxs_o=round(flete_t/n_ven*100,2) if n_ven else 0
+        vg=g.groupby(["vehicle_code","trip_number"]).agg(bul=("units_1","sum"),cap=("capacidad","max")).reset_index()
+        vg["mc"]=vg.apply(lambda r:round(r["bul"]/r["cap"]*100) if r["cap"]>0 else 0,axis=1)
+        mc_avg=round(vg["mc"].mean()) if not vg.empty else 0
+        rows.append({"Operador":op,"Camiones":n_cam,"Entregas":n_ent,"OTD %":otd_o,"OTIF %":otif_o,"Rechazos":n_rech,"Bultos":n_bul,"Venta":n_ven,"Flete":flete_t,"CxS %":cxs_o,"Max Cube %":mc_avg})
+    if rows:
+        ro=pd.DataFrame(rows).sort_values("CxS %",ascending=False)
+        # KPIs
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("🚚 Operadores",len(ro)); c2.metric("🚛 Camiones Total",int(ro["Camiones"].sum()))
+        c3.metric("📦 Entregas Total",int(ro["Entregas"].sum())); c4.metric("❌ Rechazos Total",int(ro["Rechazos"].sum()))
         st.divider()
-
-        # Tabla principal: una fila por vuelta, TODOS los camiones
-        st.markdown('<div class="section-title">📋 CxS por Camión y Vuelta (mayor a menor)</div>', unsafe_allow_html=True)
-
-        veh_show = vuelta_agg[[
-            "vehicle_code", "conductor", "operador", "centro",
-            "tipo_viaje", "salas", "bultos", "max_cube", "venta",
-            "flete", "cxs_pct"
-        ]].copy()
-        veh_show["bultos"] = veh_show["bultos"].astype(int)
-        veh_show["max_cube"] = veh_show["max_cube"].apply(lambda x: f"{x}%")
-        veh_show["venta"] = veh_show["venta"].apply(lambda x: f"${int(x):,}")
-        veh_show["flete"] = veh_show["flete"].apply(lambda x: f"${int(x):,}" if x > 0 else "Sin flete")
-        veh_show["cxs_pct"] = veh_show["cxs_pct"].apply(lambda x: f"{x}%")
-        veh_show.columns = [
-            "Vehículo", "Conductor", "Operador", "Centro",
-            "Vuelta", "Salas", "Bultos", "Max Cube", "Venta",
-            "Flete", "CxS %"
-        ]
-
-        def color_vuelta(val):
-            if val == "Segunda vuelta":
-                return "background-color: #fef9c3; color: #854d0e"
-            return ""
-
-        def color_cxs(val):
-            try:
-                num = float(str(val).replace("%", ""))
-                if num > 10:
-                    return "background-color: #fee2e2; color: #991b1b"
-                elif num > 5:
-                    return "background-color: #fef9c3; color: #854d0e"
-                elif num > 0:
-                    return "background-color: #dcfce7; color: #166534"
-            except Exception:
-                pass
-            return ""
-
-        def color_max_cube(val):
-            try:
-                num = float(str(val).replace("%", ""))
-                if num < 50:
-                    return "background-color: #fee2e2; color: #991b1b"
-                elif num < 75:
-                    return "background-color: #fef9c3; color: #854d0e"
-                else:
-                    return "background-color: #dcfce7; color: #166534"
-            except Exception:
-                pass
-            return ""
-
-        st.dataframe(
-            veh_show.style
-                .map(color_vuelta, subset=["Vuelta"])
-                .map(color_cxs, subset=["CxS %"])
-                .map(color_max_cube, subset=["Max Cube"]),
-            use_container_width=True,
-            hide_index=True,
-            height=600,
-        )
-
-        # Resumen al final
-        st.divider()
-        st.markdown('<div class="section-title">📊 Resumen CxS del Día</div>', unsafe_allow_html=True)
-
-        col_r1, col_r2, col_r3 = st.columns(3)
-        col_r1.metric("Venta Total", f"${total_venta_cxs:,}")
-        col_r2.metric("Flete Total", f"${total_flete:,}")
-        col_r3.metric("CxS Total del Día", f"{cxs_global}%")
-
-        # Resumen por operador
-        if not vuelta_agg.empty:
-            st.markdown('<div class="section-title">🏭 CxS por Operador Logístico</div>', unsafe_allow_html=True)
-            op_agg = vuelta_agg.groupby("operador").agg(
-                camiones=("vehicle_code", "nunique"),
-                viajes=("vehicle_code", "count"),
-                venta=("venta", "sum"),
-                flete=("flete", "sum"),
-            ).reset_index()
-            op_agg["cxs"] = op_agg.apply(
-                lambda r: round(r["flete"] / r["venta"] * 100, 2) if r["venta"] > 0 else 0, axis=1)
-            op_agg["venta"] = op_agg["venta"].apply(lambda x: f"${int(x):,}")
-            op_agg["flete"] = op_agg["flete"].apply(lambda x: f"${int(x):,}")
-            op_agg["cxs"] = op_agg["cxs"].apply(lambda x: f"{x}%")
-            op_agg.columns = ["Operador", "Camiones", "Viajes", "Venta", "Flete", "CxS %"]
-            st.dataframe(op_agg, use_container_width=True, hide_index=True)
-
+        # Format
+        ro_d=ro.copy(); ro_d["Venta"]=ro_d["Venta"].apply(lambda x:f"${x:,}"); ro_d["Flete"]=ro_d["Flete"].apply(lambda x:f"${x:,}")
+        ro_d["CxS %"]=ro_d["CxS %"].apply(lambda x:f"{x}%"); ro_d["Max Cube %"]=ro_d["Max Cube %"].apply(lambda x:f"{x}%")
+        st.dataframe(ro_d.style.map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube %"]),use_container_width=True,hide_index=True)
+        # Charts
+        st.markdown('<div class="section-title">📊 Comparativa OTD / OTIF</div>',unsafe_allow_html=True)
+        fig=go.Figure(data=[
+            go.Bar(name="OTD %",x=ro["Operador"],y=ro["OTD %"],marker_color=BIMBO_BLUE,text=ro["OTD %"],textposition="outside"),
+            go.Bar(name="OTIF %",x=ro["Operador"],y=ro["OTIF %"],marker_color=BIMBO_CELESTE,text=ro["OTIF %"],textposition="outside"),
+        ])
+        fig.update_layout(**PLOTLY_BASE,height=350,barmode="group",legend=dict(orientation="h",yanchor="bottom",y=1.02))
+        st.plotly_chart(fig,use_container_width=True)
+    else: st.info("Sin datos de operadores.")
 
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
-st.caption(f"Dashboard Drivin · Datos del {start_date.strftime('%d/%m/%Y')} al {end_date.strftime('%d/%m/%Y')} · {total_entregas} entregas procesadas")
+st.caption(f"Dashboard Drivin · {start_d.strftime('%d/%m/%Y')} al {end_d.strftime('%d/%m/%Y')} · {total_ent} entregas")
