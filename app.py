@@ -326,10 +326,13 @@ with st.sidebar:
     st.divider()
     st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
     st.markdown("""<style>
-    section[data-testid="stSidebar"] [data-testid="stImage"]{background:transparent!important;border:none!important;text-align:center}
-    section[data-testid="stSidebar"] [data-testid="stImage"] img{border-radius:0!important;background:transparent!important}
+    section[data-testid="stSidebar"] [data-testid="stImage"]{background:transparent!important;border:none!important;box-shadow:none!important;overflow:visible!important}
+    section[data-testid="stSidebar"] [data-testid="stImage"] img{border-radius:0!important;background:transparent!important;box-shadow:none!important}
+    section[data-testid="stSidebar"] [data-testid="stImage"] button{display:none!important}
+    section[data-testid="stSidebar"] [data-testid="stImage"] > div{background:transparent!important;border:none!important;box-shadow:none!important}
+    section[data-testid="stSidebar"] [data-testid="stImage"] > div > div{background:transparent!important}
     </style>""",unsafe_allow_html=True)
-    st.image(".streamlit/osito.png", width=180)
+    st.image(".streamlit/osito.png", use_container_width=True)
 
 # ── KPI Calculations ────────────────────────────────────────
 total_ent=len(df)
