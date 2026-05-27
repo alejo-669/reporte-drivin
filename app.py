@@ -2,7 +2,7 @@
 Dashboard Operacional Drivin — Bimbo Ideal
 ==========================================
 Multi-page sidebar · Tema claro Bimbo
-Zona horaria: America/Santiago · Auto-refresh 10 min
+Zona horaria: America/Santiago · Auto-refresh 5 min
 """
 import os, json, sqlite3
 import streamlit as st
@@ -25,7 +25,7 @@ ALERTA_MIN_SALA = 90   # min en sala para alerta
 ALERTA_HR_INICIO = 7   # hora para alerta sin iniciar
 
 st.set_page_config(page_title="Drivin — Bimbo Ideal", page_icon="🚛", layout="wide", initial_sidebar_state="expanded")
-st_autorefresh(interval=600_000, key="data_refresh")
+st_autorefresh(interval=300_000, key="data_refresh")
 
 # ── Helpers ─────────────────────────────────────────────────
 STATUS_MAP = {"approved": "Aprobado", "rejected": "Rechazado", "partial": "Parcial", "pending": "Pendiente"}
@@ -93,25 +93,56 @@ def init_db():
         address_code TEXT, planned_date TEXT, tracked_arrival TEXT,
         tracked_service_time REAL, tracked_leave TEXT, snapshot_at TEXT,
         PRIMARY KEY(address_code,planned_date,tracked_arrival))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS tst_tracking(
+        vehicle_code TEXT, address_code TEXT, planned_date TEXT,
+        tst_prev REAL, tst_current REAL, updated_at TEXT,
+        PRIMARY KEY(vehicle_code,address_code,planned_date))""")
     conn.commit(); conn.close()
 
 def save_espera_snapshot(records):
     conn=sqlite3.connect(DB_PATH)
     for r in records:
         tst=r.get("tracked_service_time"); ta=r.get("tracked_arrival")
+        vc=r.get("vehicle_code"); ac=r.get("address_code"); pd_=r.get("planned_date")
+        # Save TST tracking (prev vs current)
+        if tst and tst>0 and vc and ac:
+            try:
+                ex=conn.execute("SELECT tst_current FROM tst_tracking WHERE vehicle_code=? AND address_code=? AND planned_date=?",
+                    (vc,ac,pd_)).fetchone()
+                if ex:
+                    conn.execute("UPDATE tst_tracking SET tst_prev=tst_current,tst_current=?,updated_at=? WHERE vehicle_code=? AND address_code=? AND planned_date=?",
+                        (tst,NOW_CHILE.isoformat(),vc,ac,pd_))
+                else:
+                    conn.execute("INSERT INTO tst_tracking VALUES(?,?,?,?,?,?)",
+                        (vc,ac,pd_,0,tst,NOW_CHILE.isoformat()))
+            except: pass
+        # Save espera visitas
         if tst and tst>0 and ta:
             try:
                 ex=conn.execute("SELECT tracked_service_time FROM espera_visitas WHERE address_code=? AND planned_date=? AND tracked_arrival=?",
-                    (r.get("address_code"),r.get("planned_date"),ta)).fetchone()
+                    (ac,pd_,ta)).fetchone()
                 if ex:
                     if tst>ex[0]:
                         conn.execute("UPDATE espera_visitas SET tracked_service_time=?,tracked_leave=?,snapshot_at=? WHERE address_code=? AND planned_date=? AND tracked_arrival=?",
-                            (tst,r.get("tracked_leave"),NOW_CHILE.isoformat(),r.get("address_code"),r.get("planned_date"),ta))
+                            (tst,r.get("tracked_leave"),NOW_CHILE.isoformat(),ac,pd_,ta))
                 else:
                     conn.execute("INSERT INTO espera_visitas VALUES(?,?,?,?,?,?)",
-                        (r.get("address_code"),r.get("planned_date"),ta,tst,r.get("tracked_leave"),NOW_CHILE.isoformat()))
+                        (ac,pd_,ta,tst,r.get("tracked_leave"),NOW_CHILE.isoformat()))
             except: pass
     conn.commit(); conn.close()
+
+def get_tst_variaciones(vehicle_codes,planned_date):
+    """Retorna dict: (vehicle_code,address_code) → True si TST cambió (camión está ahí)"""
+    conn=sqlite3.connect(DB_PATH); result={}
+    try:
+        ph=",".join(["?"]*len(vehicle_codes))
+        rows=conn.execute(f"SELECT vehicle_code,address_code,tst_prev,tst_current FROM tst_tracking WHERE vehicle_code IN({ph}) AND planned_date=?",
+            vehicle_codes+[planned_date]).fetchall()
+        for vc,ac,prev,curr in rows:
+            # Si tst_current > tst_prev → el tiempo está creciendo → camión está ahí
+            result[(vc,ac)]=curr>prev and prev>0
+    except: pass
+    conn.close(); return result
 
 def get_espera_historica(dates):
     conn=sqlite3.connect(DB_PATH); result={}
@@ -144,7 +175,7 @@ def load_vehicle_info():
             if c1>0: caps[c]=int(c1)
     return fletes,caps
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def load_data(start_date,end_date):
     import requests
     api_key=os.environ.get("DRIVIN_API_KEY","")
@@ -221,17 +252,28 @@ def load_data(start_date,end_date):
 # ── Ubicacion functions ─────────────────────────────────────
 def ubicacion_vehiculos(df):
     ub={}
+    # Get TST variations to know which sala has growing time
+    try:
+        vcs=df["vehicle_code"].unique().tolist()
+        pd_=df["planned_date"].iloc[0] if not df.empty else ""
+        variaciones=get_tst_variaciones(vcs,pd_)
+    except: variaciones={}
     for v,g in df.groupby("vehicle_code"):
         r0=g.iloc[0]
         if not r0["route_is_started"] and not r0["route_is_finished"]: ub[v]="🔴 Sin iniciar ruta"; continue
         if r0["route_is_finished"]: ub[v]="✅ Ruta finalizada"; continue
-        # Prioridad 1: sala con tracked_arrival pero SIN tracked_leave (GPS confirma que está ahí)
+        # Prioridad 1: sala con TST creciendo (variación detectada)
+        for _,row in g.iterrows():
+            if variaciones.get((v,row["address_code"]),False):
+                ub[v]=f"📍 En sala {row['address_code']}"; break
+        if v in ub: continue
+        # Prioridad 2: tracked_arrival sin tracked_leave
         en=g[g["tracked_arrival"].notna()&g["tracked_leave"].isna()]
         if not en.empty: ub[v]=f"📍 En sala {en.iloc[0]['address_code']}"; continue
-        # Prioridad 2: sala con tst > 0, sin status y sin tracked_leave
+        # Prioridad 3: tst > 0, sin status, sin leave
         cand=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))&(g["tracked_leave"].isna())]
         if not cand.empty: ub[v]=f"📍 En sala {cand.loc[cand['tracked_service_time'].idxmax(),'address_code']}"; continue
-        # Prioridad 3: próxima sala pendiente
+        # Prioridad 4: próxima sala pendiente
         pend=g[g["tracked_arrival"].isna()].copy()
         if not pend.empty:
             pend["_e"]=pd.to_datetime(pend["planned_date"]+" "+pend["eta"].fillna("23:59"),errors="coerce")
@@ -241,12 +283,23 @@ def ubicacion_vehiculos(df):
 
 def ubicacion_por_sala(df):
     sala_actual={}
+    # Get TST variations
+    try:
+        vcs=df["vehicle_code"].unique().tolist()
+        pd_=df["planned_date"].iloc[0] if not df.empty else ""
+        variaciones=get_tst_variaciones(vcs,pd_)
+    except: variaciones={}
     for v,g in df.groupby("vehicle_code"):
         if not g.iloc[0]["route_is_started"] or g.iloc[0]["route_is_finished"]: continue
-        # Prioridad 1: tracked_arrival sin tracked_leave
+        # Prioridad 1: sala con TST creciendo
+        for idx,row in g.iterrows():
+            if variaciones.get((v,row["address_code"]),False):
+                sala_actual[v]=idx; break
+        if v in sala_actual: continue
+        # Prioridad 2: tracked_arrival sin tracked_leave
         en=g[g["tracked_arrival"].notna()&g["tracked_leave"].isna()]
         if not en.empty: sala_actual[v]=en.index[0]; continue
-        # Prioridad 2: tst > 0, sin status, sin tracked_leave
+        # Prioridad 3: tst > 0, sin status, sin leave
         c=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))&(g["tracked_leave"].isna())]
         if not c.empty: sala_actual[v]=c["tracked_service_time"].idxmax()
     def f(row):
@@ -256,8 +309,6 @@ def ubicacion_por_sala(df):
         if row["route_is_finished"]: return "✅ Ruta finalizada"
         if row["vehicle_code"] in sala_actual and sala_actual[row["vehicle_code"]]==row.name: return f"📍 En sala {row['address_code']}"
         tst=row.get("tracked_service_time")
-        has_leave=pd.notna(row.get("tracked_leave"))
-        if pd.notna(tst) and tst>0 and has_leave: return "🔵 Visitada (sin status)"
         if pd.notna(tst) and tst>0: return "🔵 Visitada (sin status)"
         return "🚛 Pendiente"
     return df.apply(f,axis=1)
