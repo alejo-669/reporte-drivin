@@ -225,10 +225,13 @@ def ubicacion_vehiculos(df):
         r0=g.iloc[0]
         if not r0["route_is_started"] and not r0["route_is_finished"]: ub[v]="🔴 Sin iniciar ruta"; continue
         if r0["route_is_finished"]: ub[v]="✅ Ruta finalizada"; continue
-        cand=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))]
-        if not cand.empty: ub[v]=f"📍 En sala {cand.loc[cand['tracked_service_time'].idxmax(),'address_code']}"; continue
+        # Prioridad 1: sala con tracked_arrival pero SIN tracked_leave (GPS confirma que está ahí)
         en=g[g["tracked_arrival"].notna()&g["tracked_leave"].isna()]
         if not en.empty: ub[v]=f"📍 En sala {en.iloc[0]['address_code']}"; continue
+        # Prioridad 2: sala con tst > 0, sin status y sin tracked_leave
+        cand=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))&(g["tracked_leave"].isna())]
+        if not cand.empty: ub[v]=f"📍 En sala {cand.loc[cand['tracked_service_time'].idxmax(),'address_code']}"; continue
+        # Prioridad 3: próxima sala pendiente
         pend=g[g["tracked_arrival"].isna()].copy()
         if not pend.empty:
             pend["_e"]=pd.to_datetime(pend["planned_date"]+" "+pend["eta"].fillna("23:59"),errors="coerce")
@@ -240,7 +243,11 @@ def ubicacion_por_sala(df):
     sala_actual={}
     for v,g in df.groupby("vehicle_code"):
         if not g.iloc[0]["route_is_started"] or g.iloc[0]["route_is_finished"]: continue
-        c=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))]
+        # Prioridad 1: tracked_arrival sin tracked_leave
+        en=g[g["tracked_arrival"].notna()&g["tracked_leave"].isna()]
+        if not en.empty: sala_actual[v]=en.index[0]; continue
+        # Prioridad 2: tst > 0, sin status, sin tracked_leave
+        c=g[(g["tracked_service_time"].notna())&(g["tracked_service_time"]>0)&(~g["status"].isin(["approved","rejected","partial"]))&(g["tracked_leave"].isna())]
         if not c.empty: sala_actual[v]=c["tracked_service_time"].idxmax()
     def f(row):
         if not row["route_is_started"] and not row["route_is_finished"]: return "🔴 Sin iniciar ruta"
@@ -249,6 +256,8 @@ def ubicacion_por_sala(df):
         if row["route_is_finished"]: return "✅ Ruta finalizada"
         if row["vehicle_code"] in sala_actual and sala_actual[row["vehicle_code"]]==row.name: return f"📍 En sala {row['address_code']}"
         tst=row.get("tracked_service_time")
+        has_leave=pd.notna(row.get("tracked_leave"))
+        if pd.notna(tst) and tst>0 and has_leave: return "🔵 Visitada (sin status)"
         if pd.notna(tst) and tst>0: return "🔵 Visitada (sin status)"
         return "🚛 Pendiente"
     return df.apply(f,axis=1)
