@@ -325,9 +325,11 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
-    st.divider()
-    # Para mostrar el osito: sube 'osito.png' al repo y descomenta la línea siguiente
-    st.image(".streamlit/osito.png", width=120)
+    st.markdown("""<style>
+    section[data-testid="stSidebar"] [data-testid="stImage"]{background:transparent!important;border:none!important;text-align:center}
+    section[data-testid="stSidebar"] [data-testid="stImage"] img{border-radius:0!important;background:transparent!important}
+    </style>""",unsafe_allow_html=True)
+    st.image(".streamlit/osito.png", width=180)
 
 # ── KPI Calculations ────────────────────────────────────────
 total_ent=len(df)
