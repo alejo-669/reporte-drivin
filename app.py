@@ -530,9 +530,14 @@ elif page=="📦 Status Entregas":
     rd=df_e[df_e["reason"]!="-"]["reason"].value_counts().reset_index(); rd.columns=["Motivo","Cantidad"]
     if not rd.empty:
         st.markdown('<div class="section-title">📊 Distribución de motivos</div>',unsafe_allow_html=True)
-        fig=px.pie(rd,values="Cantidad",names="Motivo",color_discrete_sequence=[BIMBO_BLUE,BIMBO_CELESTE,"#0ea5e9","#7dd3fc","#0369a1","#bae6fd","#1e40af","#60a5fa"])
-        fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",font=dict(color="#1a1a2e",size=12),height=400,margin=dict(l=10,r=10,t=30,b=10))
-        fig.update_traces(textposition="inside",textinfo="percent+label",hole=0.3)
+        rd["Porcentaje"]=round(rd["Cantidad"]/rd["Cantidad"].sum()*100,1)
+        rd["Label"]=rd.apply(lambda r:f"{r['Cantidad']} ({r['Porcentaje']}%)",axis=1)
+        fig=px.bar(rd,x="Cantidad",y="Motivo",orientation="h",text="Label",
+            color="Motivo",color_discrete_sequence=[BIMBO_BLUE,BIMBO_CELESTE,"#0ea5e9","#7dd3fc","#0369a1","#bae6fd","#1e40af","#60a5fa"])
+        fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(255,255,255,1)",
+            font=dict(color="#1a1a2e",size=12),height=max(200,len(rd)*50+80),margin=dict(l=10,r=80,t=10,b=10),
+            showlegend=False,yaxis=dict(autorange="reversed"))
+        fig.update_traces(textposition="outside")
         st.plotly_chart(fig,use_container_width=True)
 
 # ════════════════════════════════════════════════════════════
