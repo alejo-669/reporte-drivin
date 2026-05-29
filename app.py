@@ -2,7 +2,7 @@
 Dashboard Operacional Drivin — Bimbo Ideal
 ==========================================
 Multi-page sidebar · Tema claro Bimbo
-Zona horaria: America/Santiago · Auto-refresh 5 min
+Zona horaria: America/Santiago · Auto-refresh 10 min
 """
 import os, json, sqlite3
 import streamlit as st
@@ -25,7 +25,7 @@ ALERTA_MIN_SALA = 90   # min en sala para alerta
 ALERTA_HR_INICIO = 7   # hora para alerta sin iniciar
 
 st.set_page_config(page_title="Drivin — Bimbo Ideal", page_icon="🚛", layout="wide", initial_sidebar_state="expanded")
-st_autorefresh(interval=300_000, key="data_refresh")
+st_autorefresh(interval=600_000, key="data_refresh")
 
 # ── Helpers ─────────────────────────────────────────────────
 STATUS_MAP = {"approved": "Aprobado", "rejected": "Rechazado", "partial": "Parcial", "pending": "Pendiente"}
@@ -175,7 +175,7 @@ def load_vehicle_info():
             if c1>0: caps[c]=int(c1)
     return fletes,caps
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def load_data(start_date,end_date):
     import requests
     api_key=os.environ.get("DRIVIN_API_KEY","")
@@ -470,19 +470,6 @@ if page=="🏠 Inicio":
             for _,r in low_mc.iterrows():
                 st.markdown(f"&nbsp;&nbsp;&nbsp;🚛 **{r['vehicle_code']}** — {r['bultos']} bultos / {int(r['cap'])} cap. = **{r['mc']}%**")
 
-    # Alerta: operadores con CxS sobre promedio
-    if fletes:
-        df_cxs_a=df.copy(); df_cxs_a["flete"]=df_cxs_a["vehicle_code"].map(fletes).fillna(0)
-        op_a=df_cxs_a.groupby("employer_name").agg(v=("units_2","sum"),f=("flete","sum")).reset_index()
-        op_a=op_a[op_a["employer_name"]!="-"]
-        op_a["cxs"]=op_a.apply(lambda r:round(r["f"]/r["v"]*100,2) if r["v"]>0 else 0,axis=1)
-        avg_cxs=op_a["cxs"].mean()
-        high_cxs=op_a[op_a["cxs"]>avg_cxs*1.2]  # 20% above average
-        if not high_cxs.empty and avg_cxs>0:
-            st.markdown(f'<div class="alerta-blue">💰 Operadores con CxS sobre promedio ({round(avg_cxs,2)}%):</div>',unsafe_allow_html=True)
-            for _,r in high_cxs.iterrows():
-                st.markdown(f"&nbsp;&nbsp;&nbsp;**{r['employer_name']}** — CxS: **{r['cxs']}%**")
-
     if sin_iniciar==0 and en_sala_larga.empty and rech_df.empty:
         st.success("✅ Sin alertas por el momento")
 
@@ -543,8 +530,9 @@ elif page=="📦 Status Entregas":
     rd=df_e[df_e["reason"]!="-"]["reason"].value_counts().reset_index(); rd.columns=["Motivo","Cantidad"]
     if not rd.empty:
         st.markdown('<div class="section-title">📊 Distribución de motivos</div>',unsafe_allow_html=True)
-        fig=px.bar(rd,x="Cantidad",y="Motivo",orientation="h",text="Cantidad",color="Cantidad",color_continuous_scale=[[0,BIMBO_CELESTE],[1,BIMBO_BLUE]])
-        fig.update_layout(**PLOTLY_BASE,height=300,showlegend=False); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
+        fig=px.pie(rd,values="Cantidad",names="Motivo",color_discrete_sequence=[BIMBO_BLUE,BIMBO_CELESTE,"#0ea5e9","#7dd3fc","#0369a1","#bae6fd","#1e40af","#60a5fa"])
+        fig.update_layout(template="plotly_white",paper_bgcolor="rgba(0,0,0,0)",font=dict(color="#1a1a2e",size=12),height=400,margin=dict(l=10,r=10,t=30,b=10))
+        fig.update_traces(textposition="inside",textinfo="percent+label",hole=0.3)
         st.plotly_chart(fig,use_container_width=True)
 
 # ════════════════════════════════════════════════════════════
@@ -552,17 +540,26 @@ elif page=="📦 Status Entregas":
 # ════════════════════════════════════════════════════════════
 elif page=="🏆 Ranking Salas":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🏆 Ranking Salas — Tiempo de Espera GPS</h2>',unsafe_allow_html=True)
+    st.caption("Detalle por sala y fecha · Ordenado de mayor a menor espera")
     dt=df[df["espera_total_sala"].notna()&(df["espera_total_sala"]>0)].copy()
     if dt.empty: st.info("Sin datos de espera GPS.")
     else:
-        dd=dt.drop_duplicates(["address_code","planned_date"])[["address_code","address_name","planned_date","espera_max_sala","espera_total_sala","visitas_gps"]]
-        sa=dd.groupby(["address_code","address_name"]).agg(total=("espera_total_sala","max"),mayor=("espera_max_sala","max"),pasadas=("visitas_gps","max")).reset_index().sort_values("total",ascending=False).head(15)
-        sa["total"]=sa["total"].astype(int); sa["mayor"]=sa["mayor"].astype(int); sa["pasadas"]=sa["pasadas"].astype(int)
-        fig=px.bar(sa,x="total",y="address_name",orientation="h",text="total",color="total",color_continuous_scale=[[0,BIMBO_CELESTE],[.5,BIMBO_BLUE],[1,BIMBO_RED]],labels={"total":"Espera Total (min)","address_name":"Sala"})
-        fig.update_layout(**PLOTLY_BASE,height=450,showlegend=False,yaxis=dict(autorange="reversed")); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
+        # Una fila por sala + fecha
+        dd=dt.drop_duplicates(["address_code","planned_date"])[["address_code","address_name","planned_date","espera_max_sala","espera_total_sala","visitas_gps"]].copy()
+        dd["espera_total_sala"]=dd["espera_total_sala"].astype(int)
+        dd["espera_max_sala"]=dd["espera_max_sala"].astype(int)
+        dd["visitas_gps"]=dd["visitas_gps"].astype(int)
+        dd=dd.sort_values("espera_total_sala",ascending=False)
+        # Gráfico top 15
+        top15=dd.head(15).copy()
+        top15["label"]=top15["address_name"]+" ("+top15["planned_date"]+")"
+        fig=px.bar(top15,x="espera_total_sala",y="label",orientation="h",text="espera_total_sala",color="espera_total_sala",color_continuous_scale=[[0,BIMBO_CELESTE],[.5,BIMBO_BLUE],[1,BIMBO_RED]],labels={"espera_total_sala":"Espera Total (min)","label":"Sala"})
+        fig.update_layout(**PLOTLY_BASE,height=480,showlegend=False,yaxis=dict(autorange="reversed")); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
         st.plotly_chart(fig,use_container_width=True)
-        ss=sa[["address_code","address_name","total","mayor","pasadas"]].copy(); ss.columns=["Código","Sala","Espera Total","Espera Mayor","Pasadas GPS"]
-        st.dataframe(ss,use_container_width=True,hide_index=True)
+        # Tabla completa
+        ss=dd[["address_code","address_name","planned_date","espera_total_sala","espera_max_sala","visitas_gps"]].copy()
+        ss.columns=["Código","Sala","Fecha","Espera Total (min)","Espera Mayor (min)","Pasadas GPS"]
+        st.dataframe(ss,use_container_width=True,hide_index=True,height=500)
 
 # ════════════════════════════════════════════════════════════
 # PAGE: TENDENCIAS
