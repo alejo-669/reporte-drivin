@@ -200,7 +200,8 @@ def load_data(start_date,end_date):
             "route_started_at":r.get("route_started_at"),"route_finished_at":r.get("route_finished_at"),
             "driver_name":(r.get("driver_name") or "").strip(),"employer_name":r.get("employer_name"),
             "address_name":r.get("address_name"),"address_code":r.get("address_code"),
-            "address_city":r.get("address_city"),"tracked_arrival":r.get("tracked_arrival"),
+            "address_city":r.get("address_city"),"address_postal_code":r.get("address_postal_code"),
+            "tracked_arrival":r.get("tracked_arrival"),
             "tracked_leave":r.get("tracked_leave"),"tracked_service_time":r.get("tracked_service_time"),
             "visit_arrival":r.get("visit_arrival"),"visit_leave":r.get("visit_leave"),
             "trip_number":r.get("trip_number"),"route_code":r.get("route_code"),
@@ -212,7 +213,6 @@ def load_data(start_date,end_date):
                 "reason":o.get("reason"),"otif":o.get("otif"),"near_pod":o.get("near_pod"),
                 "units_1":o.get("units_1") or 0,"units_2":o.get("units_2") or 0,
                 "units_3":o.get("units_3") or 0,"client_name":o.get("client_name"),
-                "contact_name":o.get("contact_name"),
                 "tags":json.dumps(o.get("tags",[])),"pod_arrival":o.get("pod_arrival")})
     df=pd.DataFrame(rows)
     df["units_1"]=df["units_1"].apply(fmt_bultos)
@@ -220,7 +220,7 @@ def load_data(start_date,end_date):
     df["units_3"]=df["units_3"].apply(lambda x:int(float(x)) if pd.notna(x) and x!=0 else 0)
     df["status_display"]=df["status"].apply(translate_status)
     df["tipo_viaje"]=df["trip_number"].apply(lambda x:"Primera vuelta" if x==1 else("Segunda vuelta" if x==2 else "-"))
-    for col in ["reason","near_pod","client_name","driver_name","address_city","employer_name","contact_name"]:
+    for col in ["reason","near_pod","client_name","driver_name","address_city","employer_name","address_postal_code"]:
         if col in df.columns: df[col]=df[col].apply(clean_none)
     # Espera calculada
     if "tracked_arrival" in df.columns and "tracked_leave" in df.columns:
@@ -376,7 +376,7 @@ with st.sidebar:
         f_op2=st.selectbox("🚚 Operador",ops2)
         motivos_l=["Todos"]+sorted(df["reason"].replace("-",pd.NA).dropna().unique().tolist())
         f_motivo=st.selectbox("📋 Motivo",motivos_l)
-        sups=["Todos"]+sorted(df["contact_name"].replace("-",pd.NA).dropna().unique().tolist())
+        sups=["Todos"]+sorted(df["address_postal_code"].replace("-",pd.NA).dropna().unique().tolist())
         f_sup=st.selectbox("👤 Supervisor",sups)
     elif page=="💰 CxS por Camión":
         ops3=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
@@ -517,7 +517,7 @@ elif page=="📦 Status Entregas":
     if f_veh!="Todos": df_e=df_e[df_e["vehicle_code"]==f_veh]
     if f_op2!="Todos": df_e=df_e[df_e["employer_name"]==f_op2]
     if f_motivo!="Todos": df_e=df_e[df_e["reason"]==f_motivo]
-    if f_sup!="Todos": df_e=df_e[df_e["contact_name"]==f_sup]
+    if f_sup!="Todos": df_e=df_e[df_e["address_postal_code"]==f_sup]
     df_e["ubicacion"]=ubicacion_por_sala(df_e)
     # KPIs
     c1,c2,c3,c4=st.columns(4)
@@ -526,7 +526,7 @@ elif page=="📦 Status Entregas":
     c2.metric("🚚 OTD",f"{otd_e}%")
     c3.metric("📦 Bultos",f"{int(df_e['units_1'].sum()):,}")
     c4.metric("💰 Venta",f"${int(df_e['units_2'].sum()):,}")
-    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","contact_name","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
+    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","address_postal_code","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
     ds.columns=["Código","Sala","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
     for c in ["Espera Última","Espera Total"]: ds[c]=ds[c].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else "-")
     ds["Pasadas"]=ds["Pasadas"].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else 1)
