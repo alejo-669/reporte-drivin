@@ -2,7 +2,7 @@
 Dashboard Operacional Drivin — Bimbo Ideal
 ==========================================
 Multi-page sidebar · Tema claro Bimbo
-Zona horaria: America/Santiago · Auto-refresh 10 min
+Zona horaria: America/Santiago · Auto-refresh 5 min
 """
 import os, json, sqlite3
 import streamlit as st
