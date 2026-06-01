@@ -212,6 +212,7 @@ def load_data(start_date,end_date):
                 "reason":o.get("reason"),"otif":o.get("otif"),"near_pod":o.get("near_pod"),
                 "units_1":o.get("units_1") or 0,"units_2":o.get("units_2") or 0,
                 "units_3":o.get("units_3") or 0,"client_name":o.get("client_name"),
+                "contact_name":o.get("contact_name"),
                 "tags":json.dumps(o.get("tags",[])),"pod_arrival":o.get("pod_arrival")})
     df=pd.DataFrame(rows)
     df["units_1"]=df["units_1"].apply(fmt_bultos)
@@ -219,7 +220,7 @@ def load_data(start_date,end_date):
     df["units_3"]=df["units_3"].apply(lambda x:int(float(x)) if pd.notna(x) and x!=0 else 0)
     df["status_display"]=df["status"].apply(translate_status)
     df["tipo_viaje"]=df["trip_number"].apply(lambda x:"Primera vuelta" if x==1 else("Segunda vuelta" if x==2 else "-"))
-    for col in ["reason","near_pod","client_name","driver_name","address_city","employer_name"]:
+    for col in ["reason","near_pod","client_name","driver_name","address_city","employer_name","contact_name"]:
         if col in df.columns: df[col]=df[col].apply(clean_none)
     # Espera calculada
     if "tracked_arrival" in df.columns and "tracked_leave" in df.columns:
@@ -375,6 +376,8 @@ with st.sidebar:
         f_op2=st.selectbox("🚚 Operador",ops2)
         motivos_l=["Todos"]+sorted(df["reason"].replace("-",pd.NA).dropna().unique().tolist())
         f_motivo=st.selectbox("📋 Motivo",motivos_l)
+        sups=["Todos"]+sorted(df["contact_name"].replace("-",pd.NA).dropna().unique().tolist())
+        f_sup=st.selectbox("👤 Supervisor",sups)
     elif page=="💰 CxS por Camión":
         ops3=["Todos"]+sorted(df["employer_name"].replace("-",pd.NA).dropna().unique().tolist())
         f_op3=st.selectbox("🚚 Operador",ops3)
@@ -479,9 +482,12 @@ if page=="🏠 Inicio":
 elif page=="🚗 Monitoreo Flota":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🚗 Monitoreo de Flota</h2>',unsafe_allow_html=True)
     ub=ubicacion_vehiculos(df)
+    # Calcular cantidad de salas por vehículo
+    salas_por_veh=df.groupby("vehicle_code")["address_code"].nunique().to_dict()
     dv=df.drop_duplicates("vehicle_code").copy()
     dv["estado"]=dv.apply(lambda r:"Finalizada" if r["route_is_finished"] else("En ruta" if r["route_is_started"] else "Sin iniciar"),axis=1)
     dv["ubicacion"]=dv["vehicle_code"].map(ub).fillna("-")
+    dv["cant_salas"]=dv["vehicle_code"].map(salas_por_veh).fillna(0).astype(int)
     dv["hr_inicio"]=dv["route_started_at"].apply(parse_hour_chile)
     dv["hr_fin"]=dv["route_finished_at"].apply(parse_hour_chile)
     # Filters
@@ -493,8 +499,8 @@ elif page=="🚗 Monitoreo Flota":
     c2.metric("✅ Finalizadas",(dv["estado"]=="Finalizada").sum())
     c3.metric("🔵 En ruta",(dv["estado"]=="En ruta").sum())
     c4.metric("🔴 Sin iniciar",(dv["estado"]=="Sin iniciar").sum())
-    ds=dv[["vehicle_code","driver_name","employer_name","schema_name","estado","ubicacion","hr_inicio","hr_fin"]].copy()
-    ds.columns=["Vehículo","Conductor","Operador","Centro","Estado","Ubicación Actual","Inicio","Fin"]
+    ds=dv[["vehicle_code","driver_name","employer_name","schema_name","estado","ubicacion","cant_salas","hr_inicio","hr_fin"]].copy()
+    ds.columns=["Vehículo","Conductor","Operador","Centro","Estado","Ubicación Actual","Salas","Inicio","Fin"]
     st.dataframe(ds.sort_values("Estado").style.map(color_estado,subset=["Estado"]).map(color_ubicacion,subset=["Ubicación Actual"]),use_container_width=True,hide_index=True,height=600)
 
 # ════════════════════════════════════════════════════════════
@@ -511,6 +517,7 @@ elif page=="📦 Status Entregas":
     if f_veh!="Todos": df_e=df_e[df_e["vehicle_code"]==f_veh]
     if f_op2!="Todos": df_e=df_e[df_e["employer_name"]==f_op2]
     if f_motivo!="Todos": df_e=df_e[df_e["reason"]==f_motivo]
+    if f_sup!="Todos": df_e=df_e[df_e["contact_name"]==f_sup]
     df_e["ubicacion"]=ubicacion_por_sala(df_e)
     # KPIs
     c1,c2,c3,c4=st.columns(4)
@@ -519,8 +526,8 @@ elif page=="📦 Status Entregas":
     c2.metric("🚚 OTD",f"{otd_e}%")
     c3.metric("📦 Bultos",f"{int(df_e['units_1'].sum()):,}")
     c4.metric("💰 Venta",f"${int(df_e['units_2'].sum()):,}")
-    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
-    ds.columns=["Código","Sala","Vehículo","Conductor","Operador","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
+    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","contact_name","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
+    ds.columns=["Código","Sala","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
     for c in ["Espera Última","Espera Total"]: ds[c]=ds[c].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else "-")
     ds["Pasadas"]=ds["Pasadas"].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else 1)
     ds["Venta Total"]=ds["Venta Total"].apply(lambda x:f"${x:,}" if x>0 else "-")
