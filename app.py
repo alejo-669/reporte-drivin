@@ -337,7 +337,7 @@ hr{border-color:#e2e8f0!important}
 # ── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="sidebar-title">🚛 Drivin Dashboard<br>Bimbo Ideal</div>',unsafe_allow_html=True)
-    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador"],label_visibility="collapsed")
+    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","📥 Fill Rate"],label_visibility="collapsed")
     st.divider()
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
@@ -680,6 +680,13 @@ elif page=="📊 Rendimiento Operador":
         fig.update_layout(**PLOTLY_BASE,height=350,barmode="group",legend=dict(orientation="h",yanchor="bottom",y=1.02))
         st.plotly_chart(fig,use_container_width=True)
     else: st.info("Sin datos de operadores.")
+
+# ════════════════════════════════════════════════════════════
+# PAGE: FILL RATE
+# ════════════════════════════════════════════════════════════
+elif page=="📥 Fill Rate":
+    import fill_rate_tab
+    fill_rate_tab.render(df)
 
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
