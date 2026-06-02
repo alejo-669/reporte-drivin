@@ -1,20 +1,16 @@
 """
-fill_rate_tab.py  —  versión Streamlit Cloud (botón de subida, sin base de datos)
-=================================================================================
+fill_rate_tab.py  —  versión Streamlit Cloud (botón de subida, estilo Bimbo)
+============================================================================
 Pestaña "Fill Rate & Distribución" (solo canal AASS).
 
-Cómo funciona:
-- El usuario SUBE el Excel del PB con un botón (st.file_uploader).
-- Se procesa en memoria (no se guarda en disco -> compatible con Streamlit Cloud).
-- El cruce con Drivin usa la data que la app ya cargó en vivo desde la API
-  (se pasa como argumento a render), no una base de datos.
+- Usa la FECHA del sidebar (un solo control, como las otras pestañas).
+- Estilo y colores Bimbo, tablas con semáforo, Paretos arreglados.
+- El cruce con Drivin usa la data en vivo que la app ya cargó (se pasa a render).
 
 Integración en app.py:
-    elif page == "📥 Fill Rate":
+    elif page=="📥 Fill Rate":
         import fill_rate_tab
-        fill_rate_tab.render(df)        # df = data de Drivin ya cargada
-
-Archivo único y autocontenido: no depende de otros módulos nuevos.
+        fill_rate_tab.render(df, start_d.strftime("%Y-%m-%d"))
 """
 
 from __future__ import annotations
@@ -23,9 +19,16 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-UMBRAL = 0.95  # objetivo de fill rate
+# Paleta Bimbo (igual que app.py)
+BIMBO_BLUE = "#003087"
+BIMBO_CELESTE = "#38bdf8"
+BIMBO_RED = "#dc2626"
+BIMBO_GREEN = "#16a34a"
+PLOTLY_BASE = dict(template="plotly_white", paper_bgcolor="rgba(0,0,0,0)",
+                   plot_bgcolor="rgba(255,255,255,1)",
+                   font=dict(color="#1a1a2e", size=12))
+UMBRAL = 0.95
 
-# Mapeo de columnas del Excel del PB -> nombres internos
 COLMAP = {
     "ceve_id": "ceve_id", "Ceves": "ceve", "Fecha": "fecha",
     "GERENCIA": "gerencia", "ruta_id": "ruta_id",
@@ -41,37 +44,56 @@ MEASURES = ["pedido_cajas", "despacho_cajas", "recorte_cajas",
 
 
 # ---------------------------------------------------------------------------
-# Lectura del Excel (en memoria)
+# Utilidades
 # ---------------------------------------------------------------------------
-def leer_excel(file) -> pd.DataFrame:
-    """Lee el Excel subido, filtra AASS y agrega al grano sala x sku x día."""
-    df = pd.read_excel(file)
-    faltantes = [c for c in COLMAP if c not in df.columns]
-    if faltantes:
-        raise ValueError(f"Faltan columnas en el archivo: {faltantes}")
-
-    df = df[df["GERENCIA"] == "AUTOSERVICIOS"].copy()
-    if df.empty:
-        raise ValueError("No hay filas de AUTOSERVICIOS en el archivo.")
-
-    df = df[list(COLMAP.keys())].rename(columns=COLMAP)
-    df["fecha"] = pd.to_datetime(df["fecha"]).dt.strftime("%Y-%m-%d")
-    for m in MEASURES:
-        df[m] = pd.to_numeric(df[m], errors="coerce").fillna(0)
-    df = df.drop(columns=["gerencia"], errors="ignore")
-    # sumar los múltiples clientes que comparten una ruta_id
-    return df.groupby(GRAIN, as_index=False)[MEASURES].sum()
+def _titulo(txt: str) -> None:
+    st.markdown(f'<div class="section-title">{txt}</div>', unsafe_allow_html=True)
 
 
 def _fr(pedido: float, despacho: float) -> float:
     return (despacho / pedido) if pedido else 0.0
 
 
+def _color_fr(v):
+    """Semáforo para fill rate (valor en %)."""
+    try:
+        n = float(str(v).replace("%", ""))
+    except (TypeError, ValueError):
+        return ""
+    if n < 90: return "background-color:#fee2e2;color:#991b1b"
+    if n < 95: return "background-color:#fef9c3;color:#854d0e"
+    return "background-color:#dcfce7;color:#166534"
+
+
+def _color_diag(v):
+    s = str(v)
+    if s == "Recorte + rechazo": return "background-color:#fee2e2;color:#991b1b"
+    if s == "Solo recorte (stock)": return "background-color:#fef9c3;color:#854d0e"
+    if s == "Solo rechazo (calle)": return "background-color:#dbeafe;color:#1e40af"
+    if s == "OK": return "background-color:#dcfce7;color:#166534"
+    return ""
+
+
 # ---------------------------------------------------------------------------
-# Cruce con Drivin (desde la data en vivo, no desde base de datos)
+# Lectura del Excel + cruce con Drivin (en vivo)
 # ---------------------------------------------------------------------------
-def _rutas_programadas(df_drivin, fecha: str) -> set:
-    """ruta_id que estaban en Drivin esa fecha = rutas intermedia programadas."""
+def leer_excel(file) -> pd.DataFrame:
+    df = pd.read_excel(file)
+    faltantes = [c for c in COLMAP if c not in df.columns]
+    if faltantes:
+        raise ValueError(f"Faltan columnas en el archivo: {faltantes}")
+    df = df[df["GERENCIA"] == "AUTOSERVICIOS"].copy()
+    if df.empty:
+        raise ValueError("No hay filas de AUTOSERVICIOS en el archivo.")
+    df = df[list(COLMAP.keys())].rename(columns=COLMAP)
+    df["fecha"] = pd.to_datetime(df["fecha"]).dt.strftime("%Y-%m-%d")
+    for m in MEASURES:
+        df[m] = pd.to_numeric(df[m], errors="coerce").fillna(0)
+    df = df.drop(columns=["gerencia"], errors="ignore")
+    return df.groupby(GRAIN, as_index=False)[MEASURES].sum()
+
+
+def _rutas_programadas(df_drivin, fecha):
     if df_drivin is None or len(df_drivin) == 0:
         return set()
     sub = df_drivin[df_drivin["planned_date"].astype(str).str.startswith(fecha)]
@@ -84,8 +106,7 @@ def _rutas_programadas(df_drivin, fecha: str) -> set:
     return out
 
 
-def _drivin_por_ruta(df_drivin, fecha: str) -> pd.DataFrame:
-    """Agrega OTIF / rechazos / bultos por ruta desde la data en vivo de Drivin."""
+def _drivin_por_ruta(df_drivin, fecha):
     if df_drivin is None or len(df_drivin) == 0:
         return pd.DataFrame()
     sub = df_drivin[df_drivin["planned_date"].astype(str).str.startswith(fecha)].copy()
@@ -104,89 +125,87 @@ def _drivin_por_ruta(df_drivin, fecha: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Bloque 1 — Semáforo
+# Bloques
 # ---------------------------------------------------------------------------
-def _bloque_semaforo(d: pd.DataFrame) -> None:
-    ped = d["pedido_cajas"].sum()
-    des = d["despacho_cajas"].sum()
-    rec = d["recorte_cajas"].sum()
-    rec_pesos = d["recorte_pesos"].sum()
+def _bloque_semaforo(d):
+    ped, des = d["pedido_cajas"].sum(), d["despacho_cajas"].sum()
+    rec, rec_pesos = d["recorte_cajas"].sum(), d["recorte_pesos"].sum()
     fr = _fr(ped, des)
-
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Fill Rate AASS", f"{fr:.1%}", f"{fr - UMBRAL:+.1%} vs {UMBRAL:.0%}",
+    c1.metric("📊 Fill Rate AASS", f"{fr:.1%}", f"{fr - UMBRAL:+.1%} vs {UMBRAL:.0%}",
               delta_color="normal" if fr >= UMBRAL else "inverse")
-    c2.metric("Cajas validadas", f"{ped:,.0f}")
-    c3.metric("Cajas despachadas", f"{des:,.0f}", f"-{rec:,.0f} recorte", delta_color="inverse")
-    c4.metric("Recorte en $", f"${rec_pesos:,.0f}")
-
+    c2.metric("✅ Cajas validadas", f"{ped:,.0f}")
+    c3.metric("📦 Cajas despachadas", f"{des:,.0f}", f"-{rec:,.0f} recorte", delta_color="inverse")
+    c4.metric("💰 Recorte en $", f"${rec_pesos:,.0f}")
     if fr < UMBRAL:
-        st.warning(f"Bajo el umbral del {UMBRAL:.0%}: faltaron {rec:,.0f} cajas "
-                   f"(${rec_pesos:,.0f}) por despachar.")
+        st.markdown(f'<div class="alerta-yellow">⚠️ Bajo el umbral del {UMBRAL:.0%}: '
+                    f'faltaron {rec:,.0f} cajas (${rec_pesos:,.0f}) por despachar.</div>',
+                    unsafe_allow_html=True)
     else:
-        st.success(f"Sobre el umbral del {UMBRAL:.0%}.")
+        st.success(f"✅ Sobre el umbral del {UMBRAL:.0%}.")
 
 
-# ---------------------------------------------------------------------------
-# Bloque 2 — Paretos
-# ---------------------------------------------------------------------------
-def _pareto(df: pd.DataFrame, etq: str, val: str, titulo: str) -> go.Figure:
+def _pareto(df, etq, val, titulo):
     df = df.sort_values(val, ascending=False).head(20).reset_index(drop=True)
-    df["acum"] = df[val].cumsum() / df[val].sum()
+    total = df[val].sum()
+    df["acum"] = df[val].cumsum() / total if total else 0
+    orden = df[etq].tolist()
     fig = go.Figure()
-    fig.add_bar(x=df[etq], y=df[val], name=titulo, marker_color="#C8102E")
+    fig.add_bar(x=df[etq], y=df[val], name="Recorte", marker_color=BIMBO_RED)
     fig.add_scatter(x=df[etq], y=df["acum"], name="% acum", yaxis="y2",
-                    mode="lines+markers", line=dict(color="#1f3a5f"))
+                    mode="lines+markers", line=dict(color=BIMBO_BLUE, width=2),
+                    marker=dict(size=5))
     fig.add_hline(y=0.8, line_dash="dot", line_color="gray", yref="y2")
-    fig.update_layout(title=titulo, height=380, margin=dict(t=40, b=90),
+    fig.update_layout(**PLOTLY_BASE, height=360, margin=dict(l=10, r=50, t=10, b=110),
                       yaxis=dict(title="Recorte"),
                       yaxis2=dict(overlaying="y", side="right", range=[0, 1.05],
-                                  tickformat=".0%"),
-                      xaxis=dict(tickangle=-45),
-                      legend=dict(orientation="h", y=1.12))
+                                  tickformat=".0%", showgrid=False),
+                      xaxis=dict(type="category", categoryorder="array",
+                                 categoryarray=orden, tickangle=-45),
+                      legend=dict(orientation="h", y=1.12, x=1, xanchor="right"))
     return fig
 
 
-def _bloque_paretos(d: pd.DataFrame) -> None:
-    st.subheader("¿Dónde se concentra el recorte?")
+def _bloque_paretos(d):
+    _titulo("📊 ¿Dónde se concentra el recorte?")
     st.caption("Tres ángulos por igual. La línea punteada marca el 80% acumulado.")
 
     sku = d.groupby(["codigo", "descripcion"], as_index=False).agg(recorte=("recorte_cajas", "sum"))
-    sku["etq"] = sku["descripcion"].str.slice(0, 28)
-    st.plotly_chart(_pareto(sku, "etq", "recorte", "Recorte por producto (cajas)"),
-                    use_container_width=True)
+    sku["etq"] = sku["descripcion"].str.slice(0, 24)
+    st.plotly_chart(_pareto(sku, "etq", "recorte", "producto cajas"),
+                    use_container_width=True, key="p_sku_cajas")
 
     ca, cb = st.columns(2)
-    sala = d.groupby("ruta_id", as_index=False).agg(recorte=("recorte_cajas", "sum"))
-    sala["etq"] = sala["ruta_id"].astype(str)
     with ca:
-        st.plotly_chart(_pareto(sala, "etq", "recorte", "Recorte por sala (ruta_id)"),
-                        use_container_width=True)
-    skup = d.groupby(["codigo", "descripcion"], as_index=False).agg(recorte=("recorte_pesos", "sum"))
-    skup["etq"] = skup["descripcion"].str.slice(0, 28)
+        st.markdown("**Por sala (ruta_id)**")
+        sala = d.groupby("ruta_id", as_index=False).agg(recorte=("recorte_cajas", "sum"))
+        sala["etq"] = "R" + sala["ruta_id"].astype(str)
+        st.plotly_chart(_pareto(sala, "etq", "recorte", "sala"),
+                        use_container_width=True, key="p_sala")
     with cb:
-        st.plotly_chart(_pareto(skup, "etq", "recorte", "Recorte por producto ($)"),
-                        use_container_width=True)
+        st.markdown("**Por producto ($)**")
+        skup = d.groupby(["codigo", "descripcion"], as_index=False).agg(recorte=("recorte_pesos", "sum"))
+        skup["etq"] = skup["descripcion"].str.slice(0, 24)
+        st.plotly_chart(_pareto(skup, "etq", "recorte", "producto pesos"),
+                        use_container_width=True, key="p_sku_pesos")
 
 
-# ---------------------------------------------------------------------------
-# Bloque 3 — Diagnóstico (stock vs calle)
-# ---------------------------------------------------------------------------
-def _bloque_diagnostico(d: pd.DataFrame, df_drivin, fecha: str, hay_drivin: bool) -> None:
-    st.subheader("Diagnóstico: ¿recorte de stock o rechazo en la calle?")
-
+def _bloque_diagnostico(d, df_drivin, fecha, hay_drivin):
+    _titulo("🔍 Diagnóstico: ¿recorte de stock o rechazo en la calle?")
     fr_sala = d.groupby("ruta_id", as_index=False).agg(
         pedido=("pedido_cajas", "sum"), despacho=("despacho_cajas", "sum"),
         recorte=("recorte_cajas", "sum"))
     fr_sala["fill_rate"] = (fr_sala["despacho"] / fr_sala["pedido"] * 100).round(1)
-
     drivin = _drivin_por_ruta(df_drivin, fecha)
+
     if drivin.empty:
         if not hay_drivin:
-            st.info("Para cruzar con Drivin, elige en el filtro de **fecha** del "
-                    "sidebar el mismo día que estás analizando. Por ahora se muestra "
-                    "solo el fill rate por sala.")
-        st.dataframe(fr_sala.sort_values("fill_rate").head(30),
+            st.markdown('<div class="alerta-blue">ℹ️ Para cruzar con Drivin, elige en el '
+                        'sidebar la misma fecha del archivo. Por ahora se muestra solo el '
+                        'fill rate por sala.</div>', unsafe_allow_html=True)
+        t = fr_sala.sort_values("fill_rate").head(30).copy()
+        t.columns = ["Sala", "Validado", "Despachado", "Recorte", "Fill Rate %"]
+        st.dataframe(t.style.map(_color_fr, subset=["Fill Rate %"]),
                      use_container_width=True, hide_index=True)
         return
 
@@ -202,46 +221,50 @@ def _bloque_diagnostico(d: pd.DataFrame, df_drivin, fecha: str, hay_drivin: bool
         return "OK"
 
     cruce["diagnostico"] = cruce.apply(diag, axis=1)
-    st.dataframe(cruce.sort_values("fill_rate").head(30),
-                 use_container_width=True, hide_index=True)
+    t = cruce.sort_values("fill_rate").head(30)[
+        ["ruta_id", "pedido", "despacho", "recorte", "fill_rate",
+         "otif", "rechazos", "diagnostico"]].copy()
+    t.columns = ["Sala", "Validado", "Despachado", "Recorte", "Fill Rate %",
+                 "OTIF %", "Rechazos", "Diagnóstico"]
+    t["Rechazos"] = t["Rechazos"].astype(int)
+    st.dataframe(
+        t.style.map(_color_fr, subset=["Fill Rate %"]).map(_color_diag, subset=["Diagnóstico"]),
+        use_container_width=True, hide_index=True, height=500)
 
 
-# ---------------------------------------------------------------------------
-# Bloque 4 — Tendencia (del archivo cargado)
-# ---------------------------------------------------------------------------
-def _bloque_tendencia(df: pd.DataFrame) -> None:
-    st.subheader("Tendencia (del archivo cargado)")
+def _bloque_tendencia(df):
+    _titulo("📈 Tendencia (del archivo cargado)")
     diario = df.groupby("fecha", as_index=False).agg(
         pedido=("pedido_cajas", "sum"), despacho=("despacho_cajas", "sum"))
-    diario["fill_rate"] = (diario["despacho"] / diario["pedido"])
-
+    diario["fill_rate"] = diario["despacho"] / diario["pedido"]
     if len(diario) < 2:
-        st.info("Este archivo tiene un solo día. Si subes un Excel con varias fechas, "
-                "aquí verás la curva. El histórico mensual permanente llega cuando "
-                "conectemos una base de datos externa (siguiente paso).")
+        st.markdown('<div class="alerta-blue">ℹ️ Este archivo tiene un solo día. El histórico '
+                    'mensual permanente llega cuando conectemos una base de datos externa '
+                    '(siguiente paso).</div>', unsafe_allow_html=True)
         return
     fig = go.Figure()
     fig.add_scatter(x=diario["fecha"], y=diario["fill_rate"], mode="lines+markers",
-                    line=dict(color="#C8102E"), name="Fill rate")
-    fig.add_hline(y=UMBRAL, line_dash="dot", line_color="green",
+                    line=dict(color=BIMBO_RED, width=3), marker=dict(size=8), name="Fill rate")
+    fig.add_hline(y=UMBRAL, line_dash="dot", line_color=BIMBO_GREEN,
                   annotation_text=f"Umbral {UMBRAL:.0%}")
-    fig.update_layout(height=320, yaxis=dict(tickformat=".0%"), margin=dict(t=20))
-    st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(**PLOTLY_BASE, height=320, yaxis=dict(tickformat=".0%"),
+                      margin=dict(t=20))
+    st.plotly_chart(fig, use_container_width=True, key="tendencia")
 
 
 # ---------------------------------------------------------------------------
-# Render principal
+# Render
 # ---------------------------------------------------------------------------
-def render(df_drivin=None) -> None:
-    st.markdown('<h2 style="color:#003087">📥 Fill Rate & Distribución — AASS</h2>',
+def render(df_drivin=None, fecha_sidebar=None):
+    st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📥 Fill Rate &amp; Distribución — AASS</h2>',
                 unsafe_allow_html=True)
 
-    file = st.file_uploader("Sube el Excel del PB (consolidado nacional)",
-                            type=["xlsx", "xls"])
+    file = st.file_uploader("Sube el Excel del PB (consolidado nacional)", type=["xlsx", "xls"])
     if file is None:
-        st.info("Sube el archivo de distribución del PB para ver el análisis. "
-                "Se procesa al momento (no se guarda), filtra solo AASS y cruza "
-                "con las rutas que programaste en Drivin.")
+        st.markdown('<div class="alerta-blue">ℹ️ Sube el archivo de distribución del PB. Se '
+                    'procesa al momento (no se guarda), filtra solo AASS y cruza con las rutas '
+                    'que programaste en Drivin para la fecha del sidebar.</div>',
+                    unsafe_allow_html=True)
         return
 
     try:
@@ -250,23 +273,31 @@ def render(df_drivin=None) -> None:
         st.error(f"No pude leer el archivo: {e}")
         return
 
-    # Filtros
-    fechas = sorted(df["fecha"].unique(), reverse=True)
-    ceves = ["(Todas)"] + sorted(df["ceve"].dropna().unique())
-    c1, c2, c3 = st.columns([1, 2, 1])
-    fecha_sel = c1.selectbox("Fecha de despacho", fechas)
-    ceve_sel = c2.selectbox("CEVE", ceves)
-    solo_prog = c3.toggle("Solo rutas programadas", value=True,
-                          help="Filtra a las rutas intermedia que programaste "
-                               "(las que están en Drivin ese día).")
+    # Fecha: viene del sidebar. Si el Excel no la tiene, avisar.
+    fechas_excel = sorted(df["fecha"].unique(), reverse=True)
+    fecha = fecha_sidebar if fecha_sidebar in fechas_excel else fechas_excel[0]
+    if fecha_sidebar and fecha_sidebar not in fechas_excel:
+        st.markdown(f'<div class="alerta-yellow">⚠️ El archivo no tiene datos para '
+                    f'<b>{fecha_sidebar}</b> (fecha del sidebar). Mostrando <b>{fecha}</b>. '
+                    f'Para que el cruce con Drivin calce, elige en el sidebar una fecha que '
+                    f'esté en el archivo: {", ".join(fechas_excel)}.</div>',
+                    unsafe_allow_html=True)
 
-    d = df[df["fecha"] == fecha_sel]
+    # CEVE (en hoja, porque depende del archivo) + toggle de rutas programadas
+    c1, c2 = st.columns([2, 1])
+    ceves = ["(Todas)"] + sorted(df["ceve"].dropna().unique())
+    ceve_sel = c1.selectbox("CEVE", ceves)
+    solo_prog = c2.toggle("Solo rutas programadas", value=True,
+                          help="Filtra a las rutas intermedia que programaste (las que están "
+                               "en Drivin ese día).")
+
+    d = df[df["fecha"] == fecha]
     if ceve_sel != "(Todas)":
         d = d[d["ceve"] == ceve_sel]
 
     hay_drivin = False
     if solo_prog:
-        prog = _rutas_programadas(df_drivin, fecha_sel)
+        prog = _rutas_programadas(df_drivin, fecha)
         if prog:
             hay_drivin = True
             antes = d["ruta_id"].nunique()
@@ -274,10 +305,10 @@ def render(df_drivin=None) -> None:
             st.caption(f"Mostrando **{d['ruta_id'].nunique()} rutas programadas** "
                        f"(de {antes} rutas AASS del día). Las de piso quedan fuera.")
         else:
-            st.warning("No hay data de Drivin para esta fecha en la sesión actual. "
-                       "Elige en el sidebar (filtro de fecha) el mismo día que estás "
-                       "analizando para activar el filtro. Por ahora se muestran todas "
-                       "las rutas AASS.")
+            st.markdown('<div class="alerta-yellow">⚠️ No hay data de Drivin para esta fecha en '
+                        'la sesión. Elige en el sidebar la misma fecha del archivo para activar '
+                        'el filtro. Por ahora se muestran todas las rutas AASS.</div>',
+                        unsafe_allow_html=True)
 
     if d.empty:
         st.error("No quedaron rutas tras aplicar los filtros.")
@@ -287,6 +318,6 @@ def render(df_drivin=None) -> None:
     st.divider()
     _bloque_paretos(d)
     st.divider()
-    _bloque_diagnostico(d, df_drivin, fecha_sel, hay_drivin)
+    _bloque_diagnostico(d, df_drivin, fecha, hay_drivin)
     st.divider()
     _bloque_tendencia(df)
