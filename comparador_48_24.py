@@ -81,8 +81,16 @@ def _fetch_ordenes(token: str) -> list:
 
 # ── Lógica ──────────────────────────────────────────────────
 def _clasificar(escenarios: list, fecha_entrega: date):
-    """Devuelve (escenario_48h, escenario_24h) según anticipación."""
-    c48, c24 = [], []
+    """Devuelve (escenario_48h, escenario_24h) para una fecha de despacho.
+
+    Regla: de todos los escenarios CV LO ESPEJO de esa fecha (excluyendo los
+    de prueba 'CM'), el PRIMERO creado es la versión 48h (programación del
+    lunes) y el ÚLTIMO creado es la versión 24h (extracción del martes).
+    No importa el estado (Aprobado/Optimizado/Iniciado) ni la anticipación
+    exacta en días: solo el orden de creación. Si hay 3+, se comparan los
+    extremos (primero vs último).
+    """
+    candidatos = []
     for e in escenarios:
         if e.get("schema_name") != SCHEMA_OBJETIVO:
             continue
@@ -93,13 +101,16 @@ def _clasificar(escenarios: list, fecha_entrega: date):
             creado = datetime.fromisoformat(e["created_at"])
         except (KeyError, ValueError):
             continue
-        anticipo = (fecha_entrega - creado.date()).days
-        if anticipo >= 2:
-            c48.append((creado, e))
-        elif anticipo == 1:
-            c24.append((creado, e))
-    e48 = max(c48, key=lambda x: x[0])[1] if c48 else None
-    e24 = max(c24, key=lambda x: x[0])[1] if c24 else None
+        candidatos.append((creado, e))
+
+    if len(candidatos) < 2:
+        # Solo hay una versión (o ninguna): no es comparable.
+        e_unico = candidatos[0][1] if candidatos else None
+        return (e_unico, None) if e_unico else (None, None)
+
+    candidatos.sort(key=lambda x: x[0])      # ascendente por fecha de creación
+    e48 = candidatos[0][1]                    # el más antiguo = 48h
+    e24 = candidatos[-1][1]                   # el más reciente = 24h
     return e48, e24
 
 
