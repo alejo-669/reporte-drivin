@@ -303,6 +303,66 @@ def render():
         fig.update_traces(textposition="outside")
         st.plotly_chart(fig, use_container_width=True)
 
+    # ── Salas con movimiento (consolidado, siempre visible) ──
+    st.markdown('<div class="section-title">🔄 Salas con movimiento</div>',
+                unsafe_allow_html=True)
+    movimientos = []
+    for r in resultados:
+        fstr = r["fecha"].strftime("%d/%m/%Y")
+        for s in r["salieron"]:
+            movimientos.append({
+                "Fecha": fstr, "Tipo": "🔻 Salió", "Sala": s["sala"],
+                "Nombre": s["nombre"], "Ruta": s.get("ruta", ""),
+                "Comuna": s["comuna"], "Bultos 48h": int(s["bultos"]),
+                "Bultos 24h": 0, "Δ Bultos": -int(s["bultos"])})
+        for s in r["entraron"]:
+            movimientos.append({
+                "Fecha": fstr, "Tipo": "🔺 Entró", "Sala": s["sala"],
+                "Nombre": s["nombre"], "Ruta": s.get("ruta", ""),
+                "Comuna": s["comuna"], "Bultos 48h": 0,
+                "Bultos 24h": int(s["bultos"]), "Δ Bultos": int(s["bultos"])})
+        for c in r["cambios"]:
+            movimientos.append({
+                "Fecha": fstr, "Tipo": "↔️ Cambió", "Sala": c["sala"],
+                "Nombre": c["nombre"], "Ruta": c.get("ruta", ""),
+                "Comuna": "", "Bultos 48h": int(c["b48"]),
+                "Bultos 24h": int(c["b24"]), "Δ Bultos": int(c["dif"])})
+
+    if movimientos:
+        df_mov = pd.DataFrame(movimientos)
+
+        def _color_tipo(v):
+            if "Salió" in str(v):
+                return "background-color:#fee2e2;color:#991b1b;font-weight:600"
+            if "Entró" in str(v):
+                return "background-color:#dcfce7;color:#166534;font-weight:600"
+            if "Cambió" in str(v):
+                return "background-color:#fef9c3;color:#854d0e;font-weight:600"
+            return ""
+
+        def _color_delta(v):
+            try:
+                n = int(v)
+                if n < 0:
+                    return "background-color:#fee2e2;color:#991b1b"
+                if n > 0:
+                    return "background-color:#dcfce7;color:#166534"
+            except (ValueError, TypeError):
+                pass
+            return ""
+
+        st.dataframe(
+            df_mov.style
+                .map(_color_tipo, subset=["Tipo"])
+                .map(_color_delta, subset=["Δ Bultos"]),
+            use_container_width=True, hide_index=True)
+        st.caption(f"Total: {len(df_mov)} movimiento(s) en el rango · "
+                   "🔻 salió del plan · 🔺 entró · ↔️ misma sala, distinto bulto. "
+                   "Ruta en blanco = sala sin ruta asignada en ese plan.")
+    else:
+        st.success("✅ Sin movimientos en el rango: las mismas salas con los mismos "
+                   "bultos en 48h y 24h.")
+
     # ── Ranking de salas reincidentes ────────────────────────
     st.markdown('<div class="section-title">🔻 Ranking de salas que salen del plan</div>',
                 unsafe_allow_html=True)
@@ -351,7 +411,7 @@ def render():
                     f"{r['salas48']}→{r['salas24']} salas · "
                     f"{r['bultos48']:,.0f}→{r['bultos24']:,.0f} bultos · "
                     f"{n_mov} movimiento(s)").replace(",", ".")
-        with st.expander(etiqueta):
+        with st.expander(etiqueta, expanded=(n_mov > 0)):
             cc1, cc2 = st.columns(2)
             cc1.caption(f"🕐 48h creada: {_hora(r['creado48'])}")
             cc2.caption(f"🕐 24h creada: {_hora(r['creado24'])}")
