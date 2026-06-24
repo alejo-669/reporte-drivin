@@ -337,7 +337,7 @@ hr{border-color:#e2e8f0!important}
 # ── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="sidebar-title">🚛 Drivin Dashboard<br>Bimbo Ideal</div>',unsafe_allow_html=True)
-    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","📥 Fill Rate"],label_visibility="collapsed")
+    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","⚖️ Plan 48h vs 24h"],label_visibility="collapsed")
     st.divider()
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
@@ -347,6 +347,19 @@ with st.sidebar:
         f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today,min_value=today-timedelta(days=7))
     if isinstance(f_dates,tuple) and len(f_dates)==2: start_d,end_d=f_dates
     else: start_d=end_d=today
+
+# ── Comparador 48h vs 24h: pestaña independiente (no usa /pods) ──
+# Esta página tiene su propio selector de fechas interno (permite fechas
+# futuras y rangos largos), por eso se renderiza antes de cargar /pods.
+if page=="⚖️ Plan 48h vs 24h":
+    with st.sidebar:
+        st.divider()
+        st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
+    import comparador_48_24
+    comparador_48_24.render()
+    st.divider()
+    st.caption("Dashboard Drivin · Comparador de planificación 48h vs 24h")
+    st.stop()
 
 # Load data
 df_all=load_data(start_d.strftime("%Y-%m-%d"),end_d.strftime("%Y-%m-%d"))
@@ -680,13 +693,6 @@ elif page=="📊 Rendimiento Operador":
         fig.update_layout(**PLOTLY_BASE,height=350,barmode="group",legend=dict(orientation="h",yanchor="bottom",y=1.02))
         st.plotly_chart(fig,use_container_width=True)
     else: st.info("Sin datos de operadores.")
-
-# ════════════════════════════════════════════════════════════
-# PAGE: FILL RATE
-# ════════════════════════════════════════════════════════════
-elif page=="📥 Fill Rate":
-    import fill_rate_tab
-    fill_rate_tab.render(df)
 
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
