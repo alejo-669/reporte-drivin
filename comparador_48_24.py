@@ -115,15 +115,18 @@ def _clasificar(escenarios: list, fecha_entrega: date):
 
 
 def _resumir(registros: list) -> dict:
-    """registros de /orders -> {sala: {bultos, nombre, comuna}}"""
+    """registros de /orders -> {sala: {bultos, nombre, comuna, ruta}}"""
     salas = {}
     for rec in registros:
         code = str(rec.get("code"))
         ordenes = rec.get("orders") or []
         bultos = sum((o.get("units_1") or 0) for o in ordenes)
         nombre = ordenes[0].get("name") if ordenes else ""
+        skills = rec.get("skills") or []
+        ruta = skills[0] if skills else ""
         salas[code] = {"bultos": bultos, "nombre": nombre or "",
-                       "comuna": rec.get("area_level_3") or ""}
+                       "comuna": rec.get("area_level_3") or "",
+                       "ruta": ruta}
     return salas
 
 
@@ -153,6 +156,7 @@ def _comparar_fecha(fecha_entrega: date) -> dict | None:
         a, b = s48[c]["bultos"], s24[c]["bultos"]
         if a != b:
             cambios.append({"sala": c, "nombre": s24[c]["nombre"],
+                            "ruta": s24[c].get("ruta", ""),
                             "b48": a, "b24": b, "dif": b - a})
 
     return {"fecha": fecha_entrega, "incompleto": False,
@@ -306,6 +310,7 @@ def render():
     for r in resultados:
         for s in r["salieron"]:
             d = rein.setdefault(s["sala"], {"sala": s["sala"], "nombre": s["nombre"],
+                                            "ruta": s.get("ruta", ""),
                                             "comuna": s["comuna"], "veces": 0,
                                             "bultos": 0, "fechas": []})
             d["veces"] += 1
@@ -314,8 +319,8 @@ def render():
     if rein:
         rk = sorted(rein.values(), key=lambda x: (-x["veces"], -x["bultos"]))
         df_rk = pd.DataFrame([{
-            "Sala": d["sala"], "Nombre": d["nombre"], "Comuna": d["comuna"],
-            "Veces caída": d["veces"],
+            "Sala": d["sala"], "Nombre": d["nombre"], "Ruta": d["ruta"],
+            "Comuna": d["comuna"], "Veces caída": d["veces"],
             "Bultos acum.": f"{d['bultos']:,.0f}".replace(",", "."),
             "Fechas": ", ".join(d["fechas"]),
         } for d in rk])
@@ -352,22 +357,20 @@ def render():
             cc2.caption(f"🕐 24h creada: {_hora(r['creado24'])}")
             if r["salieron"]:
                 st.markdown(f"**🔻 Salieron del plan ({len(r['salieron'])})**")
-                dd = pd.DataFrame(r["salieron"])
+                dd = pd.DataFrame(r["salieron"])[["sala", "nombre", "ruta", "comuna", "bultos"]].copy()
                 dd["bultos"] = dd["bultos"].astype(int)
-                dd.columns = ["Sala", "Bultos", "Nombre", "Comuna"]
-                st.dataframe(dd[["Sala", "Nombre", "Comuna", "Bultos"]],
-                             use_container_width=True, hide_index=True)
+                dd.columns = ["Sala", "Nombre", "Ruta", "Comuna", "Bultos"]
+                st.dataframe(dd, use_container_width=True, hide_index=True)
             if r["entraron"]:
                 st.markdown(f"**🔺 Entraron al plan ({len(r['entraron'])})**")
-                dd = pd.DataFrame(r["entraron"])
+                dd = pd.DataFrame(r["entraron"])[["sala", "nombre", "ruta", "comuna", "bultos"]].copy()
                 dd["bultos"] = dd["bultos"].astype(int)
-                dd.columns = ["Sala", "Bultos", "Nombre", "Comuna"]
-                st.dataframe(dd[["Sala", "Nombre", "Comuna", "Bultos"]],
-                             use_container_width=True, hide_index=True)
+                dd.columns = ["Sala", "Nombre", "Ruta", "Comuna", "Bultos"]
+                st.dataframe(dd, use_container_width=True, hide_index=True)
             if r["cambios"]:
                 st.markdown(f"**↔️ Cambio de bultos, misma sala ({len(r['cambios'])})**")
-                dd = pd.DataFrame(r["cambios"])
-                dd.columns = ["Sala", "Nombre", "Bultos 48h", "Bultos 24h", "Δ"]
+                dd = pd.DataFrame(r["cambios"])[["sala", "nombre", "ruta", "b48", "b24", "dif"]].copy()
+                dd.columns = ["Sala", "Nombre", "Ruta", "Bultos 48h", "Bultos 24h", "Δ"]
                 st.dataframe(dd, use_container_width=True, hide_index=True)
             if n_mov == 0:
                 st.success("Sin diferencias: mismas salas y mismos bultos.")
