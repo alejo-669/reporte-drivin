@@ -539,8 +539,8 @@ elif page=="📦 Status Entregas":
     c2.metric("🚚 OTD",f"{otd_e}%")
     c3.metric("📦 Bultos",f"{int(df_e['units_1'].sum()):,}")
     c4.metric("💰 Venta",f"${int(df_e['units_2'].sum()):,}")
-    ds=df_e[["address_code","address_name","vehicle_code","driver_name","employer_name","address_postal_code","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
-    ds.columns=["Código","Sala","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
+    ds=df_e[["address_code","address_name","schema_name","vehicle_code","driver_name","employer_name","address_postal_code","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
+    ds.columns=["Código","Sala","CV","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
     for c in ["Espera Última","Espera Total"]: ds[c]=ds[c].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else "-")
     ds["Pasadas"]=ds["Pasadas"].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else 1)
     ds["Venta Total"]=ds["Venta Total"].apply(lambda x:f"${x:,}" if x>0 else "-")
@@ -569,8 +569,8 @@ elif page=="🏆 Ranking Salas":
     dt=df[df["espera_total_sala"].notna()&(df["espera_total_sala"]>0)].copy()
     if dt.empty: st.info("Sin datos de espera GPS.")
     else:
-        # Una fila por sala + fecha
-        dd=dt.drop_duplicates(["address_code","planned_date"])[["address_code","address_name","planned_date","espera_max_sala","espera_total_sala","visitas_gps"]].copy()
+        # Una fila por sala + fecha + CV
+        dd=dt.drop_duplicates(["address_code","planned_date","schema_name"])[["address_code","address_name","schema_name","planned_date","espera_max_sala","espera_total_sala","visitas_gps"]].copy()
         dd["espera_total_sala"]=dd["espera_total_sala"].astype(int)
         dd["espera_max_sala"]=dd["espera_max_sala"].astype(int)
         dd["visitas_gps"]=dd["visitas_gps"].astype(int)
@@ -578,12 +578,12 @@ elif page=="🏆 Ranking Salas":
         # Gráfico top 15
         top15=dd.head(15).copy()
         top15["label"]=top15["address_name"]+" ("+top15["planned_date"]+")"
-        fig=px.bar(top15,x="espera_total_sala",y="label",orientation="h",text="espera_total_sala",color="espera_total_sala",color_continuous_scale=[[0,BIMBO_CELESTE],[.5,BIMBO_BLUE],[1,BIMBO_RED]],labels={"espera_total_sala":"Espera Total (min)","label":"Sala"})
+        fig=px.bar(top15,x="espera_total_sala",y="label",orientation="h",text="espera_total_sala",color="espera_total_sala",color_continuous_scale=[[0,BIMBO_CELESTE],[.5,BIMBO_BLUE],[1,BIMBO_RED]],labels={"espera_total_sala":"Espera Total (min)","label":"Sala"},hover_data={"schema_name":True})
         fig.update_layout(**PLOTLY_BASE,height=480,showlegend=False,yaxis=dict(autorange="reversed")); fig.update_traces(textposition="outside"); fig.update_coloraxes(showscale=False)
         st.plotly_chart(fig,use_container_width=True)
         # Tabla completa
-        ss=dd[["address_code","address_name","planned_date","espera_total_sala","espera_max_sala","visitas_gps"]].copy()
-        ss.columns=["Código","Sala","Fecha","Espera Total (min)","Espera Mayor (min)","Pasadas GPS"]
+        ss=dd[["address_code","address_name","schema_name","planned_date","espera_total_sala","espera_max_sala","visitas_gps"]].copy()
+        ss.columns=["Código","Sala","CV","Fecha","Espera Total (min)","Espera Mayor (min)","Pasadas GPS"]
         st.dataframe(ss,use_container_width=True,hide_index=True,height=500)
 
 # ════════════════════════════════════════════════════════════
