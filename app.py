@@ -331,6 +331,9 @@ div[data-testid="metric-container"] [data-testid="stMetricValue"]{font-size:1.6r
 .alerta-blue{background:linear-gradient(135deg,#eff6ff,#dbeafe);border:1px solid #3b82f6;border-radius:10px;padding:12px 18px;color:#1e40af;font-weight:600;margin-bottom:.8rem}
 .section-title{font-size:1.05rem;font-weight:700;color:"""+BIMBO_BLUE+""";margin-bottom:.5rem;padding-bottom:4px;border-bottom:2px solid """+BIMBO_CELESTE+""";display:inline-block}
 .sidebar-title{font-size:1.3rem;font-weight:800;color:#fff;text-align:center;margin-bottom:1.5rem;padding:10px 0;border-bottom:2px solid """+BIMBO_CELESTE+"""}
+.credito-autor{text-align:center;font-size:.72rem;line-height:1.5;color:#94a3b8!important;margin-top:.6rem;padding-top:.7rem;border-top:1px solid rgba(56,189,248,.35)}
+.credito-autor b{color:#e2e8f0!important;font-size:.78rem;font-weight:700}
+.credito-autor span{color:"""+BIMBO_CELESTE+"""!important;font-weight:600;letter-spacing:.3px}
 hr{border-color:#e2e8f0!important}
 </style>""",unsafe_allow_html=True)
 
@@ -355,6 +358,10 @@ if page=="⚖️ Plan 48h vs 24h":
     with st.sidebar:
         st.divider()
         st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
+        st.markdown("""<div class="credito-autor">
+        Creado y desarrollado por<br><b>Alejandro Salazar Crisóstomo</b><br>
+        <span>Torre de Control Chile</span>
+        </div>""",unsafe_allow_html=True)
     import comparador_48_24
     comparador_48_24.render()
     st.divider()
@@ -409,6 +416,10 @@ with st.sidebar:
     section[data-testid="stSidebar"] [data-testid="stImage"] > div > div{background:transparent!important}
     </style>""",unsafe_allow_html=True)
     st.image(".streamlit/osito.png", use_container_width=True)
+    st.markdown(f"""<div class="credito-autor">
+    Creado y desarrollado por<br><b>Alejandro Salazar Crisóstomo</b><br>
+    <span>Torre de Control Chile</span>
+    </div>""",unsafe_allow_html=True)
 
 # ── KPI Calculations ────────────────────────────────────────
 total_ent=len(df)
@@ -697,3 +708,4 @@ elif page=="📊 Rendimiento Operador":
 # ── Footer ──────────────────────────────────────────────────
 st.divider()
 st.caption(f"Dashboard Drivin · {start_d.strftime('%d/%m/%Y')} al {end_d.strftime('%d/%m/%Y')} · {total_ent} entregas")
+st.caption("Creado y desarrollado por Alejandro Salazar Crisóstomo · Torre de Control Chile")
