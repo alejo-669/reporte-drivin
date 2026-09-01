@@ -332,6 +332,11 @@ section[data-testid="stSidebar"] [data-baseweb="input"] div{color:#0f172a!import
 section[data-testid="stSidebar"] .stDateInput svg{fill:#0f172a!important;color:#0f172a!important}
 [data-baseweb="popover"] li,[data-baseweb="popover"] div[role="option"],[data-baseweb="menu"] li{color:#0f172a!important}
 [data-baseweb="calendar"] *{color:#0f172a!important}
+section[data-testid="stSidebar"] [data-testid="stDateInput"] [data-baseweb="input"],
+section[data-testid="stSidebar"] [data-testid="stDateInput"] [data-baseweb="input"] *{background:#fff!important;color:#0f172a!important;-webkit-text-fill-color:#0f172a!important;opacity:1!important}
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input{font-weight:600!important;caret-color:#0f172a!important}
+section[data-testid="stSidebar"] [data-testid="stDateInput"] input::placeholder{color:#0f172a!important;-webkit-text-fill-color:#0f172a!important;opacity:1!important}
+section[data-testid="stSidebar"] [data-testid="stDateInput"] svg{fill:#0f172a!important;color:#0f172a!important}
 div[data-testid="metric-container"]{background:linear-gradient(135deg,#f7faff,#edf2fa);border:1px solid #cdd9e5;border-radius:12px;padding:14px;box-shadow:0 1px 4px rgba(0,48,135,.06)}
 div[data-testid="metric-container"] label{color:#5a6a7e!important;font-size:.78rem!important;font-weight:600!important;text-transform:uppercase}
 div[data-testid="metric-container"] [data-testid="stMetricValue"]{font-size:1.6rem!important;font-weight:800!important;color:"""+BIMBO_BLUE+"""!important}
