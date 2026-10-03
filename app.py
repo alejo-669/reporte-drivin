@@ -355,7 +355,7 @@ hr{border-color:#e2e8f0!important}
 # ── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="sidebar-title">🚛 Drivin Dashboard<br>Bimbo Ideal</div>',unsafe_allow_html=True)
-    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","⚖️ Plan 48h vs 24h"],label_visibility="collapsed")
+    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","⚖️ Plan 48h vs 24h","🚛 Carga 3D"],label_visibility="collapsed")
     st.divider()
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
@@ -381,6 +381,22 @@ if page=="⚖️ Plan 48h vs 24h":
     comparador_48_24.render()
     st.divider()
     st.caption("Dashboard Drivin · Comparador de planificación 48h vs 24h")
+    st.stop()
+
+# ── Carga 3D: pestaña independiente (tiene su propio selector de fecha) ──
+# Lee rutas y composición de carga (custom_1) directo desde Drivin.
+if page=="🚛 Carga 3D":
+    with st.sidebar:
+        st.divider()
+        st.markdown("""<div class="credito-autor">
+        Creado y desarrollado por<br><b>Alejandro Salazar Crisóstomo</b><br>
+        <span>Torre de Control Chile</span>
+        </div>""",unsafe_allow_html=True)
+        st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
+    import carga_3d
+    carga_3d.render()
+    st.divider()
+    st.caption("Dashboard Drivin · Carga 3D por camión (MC1 + WMS + Drivin)")
     st.stop()
 
 # Load data
