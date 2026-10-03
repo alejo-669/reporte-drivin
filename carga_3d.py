@@ -134,7 +134,7 @@ def render():
     hoy = datetime.now(TZ_CHILE).date()
     c1, c2 = st.columns([1, 2])
     fecha = c1.date_input("📅 Fecha de entrega", value=hoy, key="c3d_fecha",
-                          min_value=hoy - timedelta(days=7), max_value=hoy + timedelta(days=3))
+                          min_value=hoy - timedelta(days=14), max_value=hoy + timedelta(days=14))
 
     try:
         paradas = cargar_paradas(fecha.strftime("%Y-%m-%d"))
