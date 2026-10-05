@@ -483,6 +483,7 @@ else: hr_prom="-"
 # ════════════════════════════════════════════════════════════
 if page=="🏠 Inicio":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">🏠 Dashboard Operacional — {start_d.strftime("%d/%m/%Y")}</h2>',unsafe_allow_html=True)
+    estado_dato.panel(df,"Bultos y venta transportada")
     k1,k2,k3,k4=st.columns(4)
     k1.metric("📦 Entregas",f"{total_ent:,}")
     k2.metric("🚚 OTD",f"{otd}%")
@@ -492,7 +493,7 @@ if page=="🏠 Inicio":
     k5.metric("❌ Rechazos",rechazos)
     k6.metric("⚠️ Parciales",parciales)
     k7.metric("📦 Bultos",f"{total_bultos:,}")
-    k8.metric("💰 Venta Total",f"${total_venta:,}")
+    k8.metric("💰 Venta transportada",f"${total_venta:,}",help="Lo que sale del CV (incluye rechazos posteriores). Distribuido si el CV pasó por el botón 3; si no, validado.")
 
     st.divider()
     st.markdown(f'<div class="section-title">🔔 Alertas del Día</div>',unsafe_allow_html=True)
@@ -576,20 +577,22 @@ elif page=="📦 Status Entregas":
     if f_motivo!="Todos": df_e=df_e[df_e["reason"]==f_motivo]
     if f_sup!="Todos": df_e=df_e[df_e["address_postal_code"]==f_sup]
     df_e["ubicacion"]=ubicacion_por_sala(df_e)
+    estado_dato.panel(df_e,"Bultos y venta transportada")
     # KPIs
     c1,c2,c3,c4=st.columns(4)
     c1.metric("📦 Entregas",len(df_e))
     otd_e=round(((df_e["status"]=="approved")|(df_e["status"]=="partial")).sum()/len(df_e)*100,1) if len(df_e) else 0
     c2.metric("🚚 OTD",f"{otd_e}%")
     c3.metric("📦 Bultos",f"{int(df_e['units_1'].sum()):,}")
-    c4.metric("💰 Venta",f"${int(df_e['units_2'].sum()):,}")
-    ds=df_e[["address_code","address_name","schema_name","vehicle_code","driver_name","employer_name","address_postal_code","ubicacion","tipo_viaje","units_1","units_2","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
-    ds.columns=["Código","Sala","CV","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Total","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
+    c4.metric("💰 Venta transportada",f"${int(df_e['units_2'].sum()):,}")
+    ds=df_e[["address_code","address_name","schema_name","vehicle_code","driver_name","employer_name","address_postal_code","ubicacion","tipo_viaje","units_1","units_2","dato_dist","status_display","reason","otif","near_pod","tracked_service_time","espera_total_sala","visitas_gps"]].copy()
+    ds["dato_dist"]=ds["dato_dist"].map(lambda x:"Distribuido" if x else "Validado")
+    ds.columns=["Código","Sala","CV","Vehículo","Conductor","Operador","Supervisor","Ubicación","Viaje","Bultos","Venta Transportada","Dato","Status","Motivo","OTIF","Near POD","Espera Última","Espera Total","Pasadas"]
     for c in ["Espera Última","Espera Total"]: ds[c]=ds[c].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else "-")
     ds["Pasadas"]=ds["Pasadas"].apply(lambda x:int(x) if pd.notna(x) and str(x) not in("-","") else 1)
-    ds["Venta Total"]=ds["Venta Total"].apply(lambda x:f"${x:,}" if x>0 else "-")
+    ds["Venta Transportada"]=ds["Venta Transportada"].apply(lambda x:f"${x:,}" if x>0 else "-")
     ds=ds.fillna("-")
-    st.dataframe(ds.style.map(color_status,subset=["Status"]).map(color_ubicacion,subset=["Ubicación"]).map(color_vuelta,subset=["Viaje"]),use_container_width=True,hide_index=True,height=600)
+    st.dataframe(ds.style.map(color_status,subset=["Status"]).map(color_ubicacion,subset=["Ubicación"]).map(color_vuelta,subset=["Viaje"]).map(estado_dato.color,subset=["Dato"]),use_container_width=True,hide_index=True,height=600)
     # Motivos chart
     rd=df_e[df_e["reason"]!="-"]["reason"].value_counts().reset_index(); rd.columns=["Motivo","Cantidad"]
     if not rd.empty:
@@ -635,6 +638,7 @@ elif page=="🏆 Ranking Salas":
 # ════════════════════════════════════════════════════════════
 elif page=="📈 Tendencias":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📈 Tendencias</h2>',unsafe_allow_html=True)
+    estado_dato.panel(df,"Bultos y venta transportada")
     dt=df.copy(); dt["fecha"]=pd.to_datetime(dt["planned_date"])
     bd=dt.groupby("fecha")["units_1"].sum().reset_index(); bd.columns=["Fecha","Bultos"]
     od=dt.groupby("fecha").apply(lambda x:round((x["otif"]=="Si").sum()/len(x)*100,1) if len(x) else 0).reset_index(); od.columns=["Fecha","OTIF %"]
@@ -652,17 +656,18 @@ elif page=="📈 Tendencias":
     fig.update_layout(yaxis2=dict(title=dict(text="OTD / OTIF %",font=dict(color=BIMBO_BLUE)),tickfont=dict(color=BIMBO_BLUE),side="right",overlaying="y",range=[0,100]))
     st.plotly_chart(fig,use_container_width=True)
     st.markdown('<div class="section-title">🏭 Entregas por Centro</div>',unsafe_allow_html=True)
-    ec=df.groupby("schema_name").agg(ent=("order_code","count"),otd=("status",lambda x:round(((x=="approved")|(x=="partial")).sum()/len(x)*100,1)),otif=("otif",lambda x:round((x=="Si").sum()/len(x)*100,1)),bul=("units_1","sum"),ven=("units_2","sum")).reset_index().sort_values("ent",ascending=False)
+    ec=df.groupby("schema_name").agg(ent=("order_code","count"),otd=("status",lambda x:round(((x=="approved")|(x=="partial")).sum()/len(x)*100,1)),otif=("otif",lambda x:round((x=="Si").sum()/len(x)*100,1)),bul=("units_1","sum"),ven=("units_2","sum"),dist=("dato_dist","mean")).reset_index().sort_values("ent",ascending=False)
     ec["bul"]=ec["bul"].astype(int); ec["ven"]=ec["ven"].apply(lambda x:f"${int(x):,}")
-    ec.columns=["Centro","Entregas","OTD %","OTIF %","Bultos","Venta"]
-    st.dataframe(ec,use_container_width=True,hide_index=True)
+    ec["dist"]=ec["dist"].map(lambda f:estado_dato.etiqueta(f).replace("Programado","Validado"))
+    ec.columns=["Centro","Entregas","OTD %","OTIF %","Bultos","Venta transportada","Dato"]
+    st.dataframe(ec.style.map(estado_dato.color,subset=["Dato"]),use_container_width=True,hide_index=True)
 
 # ════════════════════════════════════════════════════════════
 # PAGE: CxS POR CAMIÓN
 # ════════════════════════════════════════════════════════════
 elif page=="💰 CxS por Camión":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">💰 Costo por Servir (CxS)</h2>',unsafe_allow_html=True)
-    estado_dato.panel(df)   # franja: qué CV ya tienen dato distribuido (botón 3)
+    estado_dato.panel(df,"CxS")   # franja: qué CV ya tienen dato distribuido (botón 3)
     fletes,caps=load_vehicle_info()
     dc=df.copy(); dc["flete"]=dc["vehicle_code"].map(fletes).fillna(0).astype(int); dc["capacidad"]=dc["vehicle_code"].map(caps).fillna(0).astype(int)
     va=dc.groupby(["vehicle_code","trip_number"]).agg(conductor=("driver_name","first"),operador=("employer_name","first"),centro=("schema_name","first"),salas=("address_code","nunique"),bultos=("units_1","sum"),venta=("units_2","sum"),flete=("flete","max"),capacidad=("capacidad","max"),dist=("dato_dist","mean")).reset_index()
@@ -684,7 +689,7 @@ elif page=="💰 CxS por Camión":
     vs=va[["vehicle_code","conductor","operador","centro","tipo_viaje","salas","bultos","max_cube","venta","flete","cxs_pct","dist"]].copy()
     vs["bultos"]=vs["bultos"].astype(int); vs["max_cube"]=vs["max_cube"].apply(lambda x:f"{x}%"); vs["venta"]=vs["venta"].apply(lambda x:f"${int(x):,}")
     vs["flete"]=vs["flete"].apply(lambda x:f"${int(x):,}" if x>0 else "Sin flete"); vs["cxs_pct"]=vs["cxs_pct"].apply(lambda x:f"{x}%")
-    vs["dist"]=vs["dist"].map(estado_dato.etiqueta)   # Distribuido / Mixto / Programado
+    vs["dist"]=vs["dist"].map(lambda f:estado_dato.etiqueta(f).replace("Programado","Validado"))   # Distribuido / Mixto / Validado
     vs.columns=["Vehículo","Conductor","Operador","Centro","Vuelta","Salas","Bultos","Max Cube","Venta","Flete","CxS %","Dato"]
     st.dataframe(vs.style.map(color_vuelta,subset=["Vuelta"]).map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube"]).map(estado_dato.color,subset=["Dato"]),use_container_width=True,hide_index=True,height=600)
     st.divider()
@@ -702,6 +707,7 @@ elif page=="💰 CxS por Camión":
 # ════════════════════════════════════════════════════════════
 elif page=="📊 Rendimiento Operador":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">📊 Rendimiento por Operador Logístico</h2>',unsafe_allow_html=True)
+    estado_dato.panel(df,"CxS y bultos")
     fletes,caps=load_vehicle_info()
     dr=df.copy(); dr["flete"]=dr["vehicle_code"].map(fletes).fillna(0).astype(int); dr["capacidad"]=dr["vehicle_code"].map(caps).fillna(0).astype(int)
     if f_op4!="Todos": dr=dr[dr["employer_name"]==f_op4]

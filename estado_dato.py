@@ -7,7 +7,7 @@ si no, siguen siendo lo PROGRAMADO (botón 1).
 
 Uso en app.py:
   · load_data:   "dato_dist": estado_dato.es_distribuido(o)   (por orden)
-  · CxS:         estado_dato.panel(df)                        (franja por CV)
+  · Páginas:     estado_dato.panel(df, "CxS")                 (franja por CV)
                  estado_dato.etiqueta / estado_dato.color     (columna "Dato" por viaje)
 """
 from __future__ import annotations
@@ -61,8 +61,9 @@ def resumen_cv(df: pd.DataFrame) -> pd.DataFrame:
     return r.sort_values(["estado", "centro"])
 
 
-def panel(df: pd.DataFrame):
-    """Franja arriba del CxS: estado de cada CV y % de la venta con dato distribuido."""
+def panel(df: pd.DataFrame, tema: str = "CxS"):
+    """Franja de estado del dato: cada CV y % de la venta con dato distribuido.
+    tema: qué indicador se está mostrando ("CxS", "Venta transportada", ...)."""
     r = resumen_cv(df)
     if r.empty:
         return
@@ -72,11 +73,12 @@ def panel(df: pd.DataFrame):
 
     # Conclusión primero
     if completos == len(r):
-        st.success(f"✅ CxS definitivo: los {len(r)} CV están actualizados con lo distribuido.")
+        st.success(f"✅ {tema} definitivo: los {len(r)} CV están actualizados con lo distribuido.")
     else:
         faltan = ", ".join(r.loc[r["estado"] != "Distribuido", "centro"].str.replace("CV ", "", regex=False))
-        st.markdown(f'<div class="alerta-yellow">⏳ CxS preliminar: <b>{pct:.0f}%</b> de la venta ya tiene dato '
-                    f'distribuido · {completos} de {len(r)} CV completos. Falta botón 3 en: {faltan}</div>',
+        st.markdown(f'<div class="alerta-yellow">⏳ {tema} preliminar: <b>{pct:.0f}%</b> de la venta ya tiene dato '
+                    f'distribuido · {completos} de {len(r)} CV completos (el resto muestra lo validado). '
+                    f'Falta botón 3 en: {faltan}</div>',
                     unsafe_allow_html=True)
 
     # Un chip por CV
@@ -85,7 +87,7 @@ def panel(df: pd.DataFrame):
     for f in r.itertuples():
         fondo, texto = {"Distribuido": VERDE, "Mixto": AMARILLO}.get(f.estado, GRIS)
         detalle = "distribuido" if f.estado == "Distribuido" else (
-            f"{int(f.salas_dist)}/{f.salas} salas" if f.estado == "Mixto" else "programado")
+            f"{int(f.salas_dist)}/{f.salas} salas" if f.estado == "Mixto" else "validado")
         chips.append(f'<span style="display:inline-block;margin:0 6px 6px 0;padding:4px 10px;border-radius:999px;'
                      f'background:{fondo};color:{texto};font-size:.8rem;font-weight:600">'
                      f'{iconos[f.estado]} {f.centro.replace("CV ", "")} · {detalle}</span>')
