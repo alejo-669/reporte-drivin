@@ -354,7 +354,8 @@ def render():
         avisos = _chequeo_venta(df)
         if avisos:
             st.warning("⚠️ **La vista en venta no es confiable todavía.** Usa envases mientras se corrige "
-                       "el bot.\n\n" + "\n\n".join(f"• {a}" for a in avisos))
+                       "el bot.\n\n" + "\n\n".join(f"• {a}" for a in avisos).replace("$", "\\$"))
+            # (el \\$ evita que Streamlit lea "$...$" como fórmula matemática)
     solicitado_total = c["programado"] + c["nuevas"] + c["eliminadas"] + c["ajuste"] + c["comercial"]
     fr = c["distribuido"] / solicitado_total * 100 if solicitado_total else 0
     k = st.columns(6 if pesos else 5)
