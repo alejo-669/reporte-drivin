@@ -229,7 +229,7 @@ def _chequeo_venta(df: pd.DataFrame) -> list[str]:
 def _grafico_cascada(c: dict, titulo: str, pesos: bool):
     pasos = [("Programado", c["programado"]), ("Salas nuevas", c["nuevas"]),
              ("Salas eliminadas", c["eliminadas"])]
-    if pesos:
+    if pesos and abs(c["ajuste"]) >= 1:          # solo cuando existe (fechas del botón 1 antiguo)
         pasos.append(("Ajuste valorización", c["ajuste"]))
     pasos += [("Cambio comercial", c["comercial"]), ("Quiebre", c["quiebre"]), ("Distribuido", c["distribuido"])]
     etiquetas, valores = [x for x, _ in pasos], [v for _, v in pasos]
@@ -358,10 +358,11 @@ def render():
             # (el \\$ evita que Streamlit lea "$...$" como fórmula matemática)
     solicitado_total = c["programado"] + c["nuevas"] + c["eliminadas"] + c["ajuste"] + c["comercial"]
     fr = c["distribuido"] / solicitado_total * 100 if solicitado_total else 0
-    k = st.columns(6 if pesos else 5)
+    con_ajuste = pesos and abs(c["ajuste"]) >= 1   # se muestra solo si hay diferencia
+    k = st.columns(6 if con_ajuste else 5)
     i = iter(k)
     next(i).metric("Programado", fmt(c["programado"]))
-    if pesos:
+    if con_ajuste:
         next(i).metric("Ajuste valorización", fmt(c["ajuste"]),
                        help="Diferencia de precio entre lo programado y lo solicitado sin que ventas cambie "
                             "envases: productos que MC1 tenía en $0 al programar o cambios de precio. "
