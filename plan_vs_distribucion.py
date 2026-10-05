@@ -112,15 +112,31 @@ def cargar_fecha(fecha: str) -> pd.DataFrame:
 
 
 def cascada(df: pd.DataFrame, medida: str = "env") -> dict:
-    """Programado -> +nuevas -> -eliminadas -> ±comercial -> -quiebre -> distribuido."""
+    """
+    Programado -> +nuevas -> -eliminadas -> ±ajuste valorización -> ±comercial -> -quiebre -> distribuido.
+
+    En VENTA el cambio comercial se mide con los envases (lo que ventas cambió de verdad) a
+    precio programado por envase; el resto de la diferencia programado vs solicitado es
+    AJUSTE DE VALORIZACIÓN (productos que MC1 tenía en $0 al programar, cambios de precio).
+    Así el quiebre en venta = suma del detalle por producto (custom_4).
+    """
     p, s, d = f"prog_{medida}", f"sol_{medida}", f"dist_{medida}"
     e = df["estado"]
     sigue = e.isin(["OK", "QUIEBRE_TOTAL", "REVALIDADA"])
+    dif = (df.loc[sigue, s] - df.loc[sigue, p])
+    if medida == "venta":
+        g = df.loc[sigue]
+        precio_env = (g["prog_venta"] / g["prog_env"].where(g["prog_env"] > 0)).fillna(0)
+        comercial = ((g["sol_env"] - g["prog_env"]) * precio_env)
+        ajuste = dif - comercial
+    else:
+        comercial, ajuste = dif, dif * 0
     return {
         "programado": df.loc[e != "NUEVA", p].sum(),
         "nuevas": df.loc[e == "NUEVA", s].sum(),
         "eliminadas": -df.loc[e == "ELIMINADA", p].sum(),
-        "comercial": (df.loc[sigue, s] - df.loc[sigue, p]).sum(),
+        "ajuste": ajuste.sum(),
+        "comercial": comercial.sum(),
         "quiebre": -(df.loc[e != "ELIMINADA", s] - df.loc[e != "ELIMINADA", d]).sum(),
         "distribuido": df[d].sum(),
     }
@@ -197,29 +213,31 @@ def _formatear(tabla: pd.DataFrame, enteros=(), deltas=(), pesos=(), pct=()):
 
 
 def _chequeo_venta(df: pd.DataFrame) -> list[str]:
-    """Detecta inconsistencias de la medida venta contrastándola con envases.
-    Si en envases hay quiebre pero la venta distribuida = programada, units_2 no se
-    está actualizando; si en envases no hay cambio comercial pero en venta sí, la venta
-    solicitada (o2) está valorizada distinto a la programada (u2)."""
+    """Detecta datos de venta inconsistentes (versiones antiguas del botón 3)."""
     ce, cv = cascada(df, "env"), cascada(df, "venta")
     avisos = []
     if abs(ce["quiebre"]) > 0 and abs(cv["distribuido"] - cv["programado"]) < 1:
         avisos.append("La **venta distribuida es idéntica a la programada** aunque en envases hay quiebre "
-                      f"({_n(ce['quiebre'])} env.): el botón 3 no está actualizando `units_2`.")
-    if abs(ce["comercial"] + ce["nuevas"] + ce["eliminadas"]) < 1 and abs(cv["comercial"]) > 1:
-        avisos.append("En envases **no hay cambio comercial**, pero en venta aparece "
-                      f"{_pesos(cv['comercial'])}: la venta solicitada (`o2`) está valorizada distinto "
-                      "a la programada (`u2`) — no es un cambio real de ventas.")
+                      f"({_n(ce['quiebre'])} env.): vuelve a correr el botón 3 con la versión actual.")
+    detalle = quiebre_productos(df)["venta"].sum() if "quiebre_prod" in df else 0
+    if detalle and abs(detalle + cv["quiebre"]) > max(1000, 0.01 * detalle):
+        avisos.append(f"El detalle por producto ({_pesos(detalle)}) no cuadra con el quiebre de la cascada "
+                      f"({_pesos(-cv['quiebre'])}): vuelve a correr el botón 3 con la versión actual.")
     return avisos
 
 
 def _grafico_cascada(c: dict, titulo: str, pesos: bool):
-    etiquetas = ["Programado", "Salas nuevas", "Salas eliminadas", "Cambio comercial", "Quiebre", "Distribuido"]
-    valores = [c["programado"], c["nuevas"], c["eliminadas"], c["comercial"], c["quiebre"], c["distribuido"]]
+    pasos = [("Programado", c["programado"]), ("Salas nuevas", c["nuevas"]),
+             ("Salas eliminadas", c["eliminadas"])]
+    if pesos:
+        pasos.append(("Ajuste valorización", c["ajuste"]))
+    pasos += [("Cambio comercial", c["comercial"]), ("Quiebre", c["quiebre"]), ("Distribuido", c["distribuido"])]
+    etiquetas, valores = [x for x, _ in pasos], [v for _, v in pasos]
+    ultimo = len(valores) - 1
     fmt = _pesos if pesos else _n
     fig = go.Figure(go.Waterfall(
-        x=etiquetas, y=valores, measure=["absolute", "relative", "relative", "relative", "relative", "total"],
-        text=[fmt(v) if i in (0, 5) else ("+" if v > 0 else "") + fmt(v) for i, v in enumerate(valores)],
+        x=etiquetas, y=valores, measure=["absolute"] + ["relative"] * (ultimo - 1) + ["total"],
+        text=[fmt(v) if i in (0, ultimo) else ("+" if v > 0 else "") + fmt(v) for i, v in enumerate(valores)],
         textposition="outside",
         increasing={"marker": {"color": VERDE}}, decreasing={"marker": {"color": ROJO}},
         totals={"marker": {"color": BIMBO_BLUE}}, connector={"line": {"color": GRIS}}))
@@ -337,15 +355,22 @@ def render():
         if avisos:
             st.warning("⚠️ **La vista en venta no es confiable todavía.** Usa envases mientras se corrige "
                        "el bot.\n\n" + "\n\n".join(f"• {a}" for a in avisos))
-    solicitado_total = c["programado"] + c["nuevas"] + c["eliminadas"] + c["comercial"]
+    solicitado_total = c["programado"] + c["nuevas"] + c["eliminadas"] + c["ajuste"] + c["comercial"]
     fr = c["distribuido"] / solicitado_total * 100 if solicitado_total else 0
-    k = st.columns(5)
-    k[0].metric("Programado", fmt(c["programado"]))
-    k[1].metric("Cambio comercial (ventas)", fmt(c["nuevas"] + c["eliminadas"] + c["comercial"]),
-                help="Salas nuevas + eliminadas + aumentos/bajas de pedido")
-    k[2].metric("Quiebre", fmt(c["quiebre"]), help="Lo solicitado que no salió por falta de producto")
-    k[3].metric("Distribuido", fmt(c["distribuido"]))
-    k[4].metric("Fill rate", f"{fr:.1f}%", f"{fr - META_FR:+.1f} pp vs meta {META_FR:.0f}%")
+    k = st.columns(6 if pesos else 5)
+    i = iter(k)
+    next(i).metric("Programado", fmt(c["programado"]))
+    if pesos:
+        next(i).metric("Ajuste valorización", fmt(c["ajuste"]),
+                       help="Diferencia de precio entre lo programado y lo solicitado sin que ventas cambie "
+                            "envases: productos que MC1 tenía en $0 al programar o cambios de precio. "
+                            "Con la foto del pedido programado (bot v3) debería ser casi cero.")
+    next(i).metric("Cambio comercial (ventas)", fmt(c["nuevas"] + c["eliminadas"] + c["comercial"]),
+                   help="Salas nuevas + eliminadas + aumentos/bajas de pedido")
+    next(i).metric("Quiebre", fmt(c["quiebre"]), help="Lo solicitado que no salió por falta de producto. "
+                   "En venta = suma de la pestaña 📦 Productos con quiebre")
+    next(i).metric("Distribuido", fmt(c["distribuido"]))
+    next(i).metric("Fill rate", f"{fr:.1f}%", f"{fr - META_FR:+.1f} pp vs meta {META_FR:.0f}%")
     st.plotly_chart(_grafico_cascada(c, f"Del plan a la distribución · {medida.lower()}", pesos),
                     width="stretch")
 
@@ -387,7 +412,7 @@ def render():
         filas = []
         for (f, cv), g in df.groupby(["fecha", "centro"]):
             cc = cascada(g, "env")
-            sol = cc["programado"] + cc["nuevas"] + cc["eliminadas"] + cc["comercial"]
+            sol = cc["programado"] + cc["nuevas"] + cc["eliminadas"] + cc["ajuste"] + cc["comercial"]
             filas.append({"Fecha": f, "CV": cv, "Programado": cc["programado"], "Nuevas": cc["nuevas"],
                           "Eliminadas": cc["eliminadas"], "Comercial": cc["comercial"],
                           "Quiebre": cc["quiebre"], "Distribuido": cc["distribuido"],
