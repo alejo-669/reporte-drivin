@@ -355,7 +355,7 @@ hr{border-color:#e2e8f0!important}
 # ── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.markdown('<div class="sidebar-title">🚛 Drivin Dashboard<br>Bimbo Ideal</div>',unsafe_allow_html=True)
-    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","⚖️ Plan 48h vs 24h","🚛 Carga 3D"],label_visibility="collapsed")
+    page=st.radio("📖 Navegación",["🏠 Inicio","🚗 Monitoreo Flota","📦 Status Entregas","🏆 Ranking Salas","📈 Tendencias","💰 CxS por Camión","📊 Rendimiento Operador","⚖️ Plan vs Distribución","🚛 Carga 3D"],label_visibility="collapsed")
     st.divider()
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
@@ -369,7 +369,7 @@ with st.sidebar:
 # ── Comparador 48h vs 24h: pestaña independiente (no usa /pods) ──
 # Esta página tiene su propio selector de fechas interno (permite fechas
 # futuras y rangos largos), por eso se renderiza antes de cargar /pods.
-if page=="⚖️ Plan 48h vs 24h":
+if page=="⚖️ Plan vs Distribución":
     with st.sidebar:
         st.divider()
         st.markdown("""<div class="credito-autor">
@@ -377,10 +377,10 @@ if page=="⚖️ Plan 48h vs 24h":
         <span>Torre de Control Chile</span>
         </div>""",unsafe_allow_html=True)
         st.caption(f"Actualizado: {NOW_CHILE.strftime('%d/%m/%Y %H:%M')}")
-    import comparador_48_24
-    comparador_48_24.render()
+    import plan_vs_distribucion
+    plan_vs_distribucion.render()
     st.divider()
-    st.caption("Dashboard Drivin · Comparador de planificación 48h vs 24h")
+    st.caption("Dashboard Drivin · Plan vs Distribución (MC1 + Drivin)")
     st.stop()
 
 # ── Carga 3D: pestaña independiente (tiene su propio selector de fecha) ──
