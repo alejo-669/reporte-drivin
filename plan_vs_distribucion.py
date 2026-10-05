@@ -138,11 +138,50 @@ def movimientos(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── 2. Pantalla ────────────────────────────────────────────────
 def _n(v) -> str:
+    """Entero con separador de miles chileno: 1234567 -> '1.234.567'."""
+    if v is None or pd.isna(v):
+        return ""
     return f"{v:,.0f}".replace(",", ".")
 
 
 def _pesos(v) -> str:
+    if v is None or pd.isna(v):
+        return ""
     return ("-" if v < 0 else "") + "$" + _n(abs(v))
+
+
+def _delta(v) -> str:
+    """Variación con signo: +12 / -3 / 0."""
+    if v is None or pd.isna(v):
+        return ""
+    return ("+" if v > 0 else "") + _n(v)
+
+
+def _formatear(tabla: pd.DataFrame, enteros=(), deltas=(), pesos=(), pct=()):
+    """Styler sin los 6 decimales por defecto: enteros, deltas con signo, pesos y %."""
+    fmt = {c: _n for c in enteros if c in tabla}
+    fmt.update({c: _delta for c in deltas if c in tabla})
+    fmt.update({c: _pesos for c in pesos if c in tabla})
+    fmt.update({c: (lambda v: "" if pd.isna(v) else f"{v:.1f}%".replace(".", ","))
+                for c in pct if c in tabla})
+    return tabla.style.format(fmt)
+
+
+def _chequeo_venta(df: pd.DataFrame) -> list[str]:
+    """Detecta inconsistencias de la medida venta contrastándola con envases.
+    Si en envases hay quiebre pero la venta distribuida = programada, units_2 no se
+    está actualizando; si en envases no hay cambio comercial pero en venta sí, la venta
+    solicitada (o2) está valorizada distinto a la programada (u2)."""
+    ce, cv = cascada(df, "env"), cascada(df, "venta")
+    avisos = []
+    if abs(ce["quiebre"]) > 0 and abs(cv["distribuido"] - cv["programado"]) < 1:
+        avisos.append("La **venta distribuida es idéntica a la programada** aunque en envases hay quiebre "
+                      f"({_n(ce['quiebre'])} env.): el botón 3 no está actualizando `units_2`.")
+    if abs(ce["comercial"] + ce["nuevas"] + ce["eliminadas"]) < 1 and abs(cv["comercial"]) > 1:
+        avisos.append("En envases **no hay cambio comercial**, pero en venta aparece "
+                      f"{_pesos(cv['comercial'])}: la venta solicitada (`o2`) está valorizada distinto "
+                      "a la programada (`u2`) — no es un cambio real de ventas.")
+    return avisos
 
 
 def _grafico_cascada(c: dict, titulo: str, pesos: bool):
@@ -213,6 +252,11 @@ def render():
     m, pesos = ("env", False) if medida == "Envases" else ("venta", True)
     c = cascada(df, m)
     fmt = _pesos if pesos else _n
+    if pesos:
+        avisos = _chequeo_venta(df)
+        if avisos:
+            st.warning("⚠️ **La vista en venta no es confiable todavía.** Usa envases mientras se corrige "
+                       "el bot.\n\n" + "\n\n".join(f"• {a}" for a in avisos))
     solicitado_total = c["programado"] + c["nuevas"] + c["eliminadas"] + c["comercial"]
     fr = c["distribuido"] / solicitado_total * 100 if solicitado_total else 0
     k = st.columns(5)
@@ -250,7 +294,9 @@ def render():
                 if "Quiebre" in v:
                     return "background-color:#ffedd5;color:#9a3412;font-weight:600"
                 return ""
-            st.dataframe(tabla.sort_values(["Fecha", "CV", "Tipo"]).style.map(_color, subset=["Tipo"]),
+            tabla = tabla.sort_values(["Fecha", "CV", "Tipo"])
+            st.dataframe(_formatear(tabla, enteros=["Programado", "Solicitado", "Distribuido"],
+                                    deltas=["Δ Comercial", "Δ Quiebre"]).map(_color, subset=["Tipo"]),
                          width="stretch", hide_index=True)
             st.caption("Δ Comercial: cambio del pedido por ventas · Δ Quiebre: lo que no salió por falta de producto.")
 
@@ -263,7 +309,10 @@ def render():
                           "Eliminadas": cc["eliminadas"], "Comercial": cc["comercial"],
                           "Quiebre": cc["quiebre"], "Distribuido": cc["distribuido"],
                           "Fill rate %": round(cc["distribuido"] / sol * 100, 1) if sol else None})
-        st.dataframe(pd.DataFrame(filas), width="stretch", hide_index=True)
+        st.dataframe(_formatear(pd.DataFrame(filas), enteros=["Programado", "Distribuido"],
+                                deltas=["Nuevas", "Eliminadas", "Comercial", "Quiebre"],
+                                pct=["Fill rate %"]),
+                     width="stretch", hide_index=True)
 
     with t3:
         mov = movimientos(df)
@@ -278,10 +327,10 @@ def render():
                       .agg(veces=("fecha", "nunique"), envases=("d_comercial", "sum"),
                            eliminaciones=("estado", lambda e: (e == "ELIMINADA").sum()))
                       .sort_values(["veces", "envases"], ascending=[False, True]).head(20))
-                st.dataframe(rk.rename(columns={"sala": "Sala", "nombre": "Nombre", "centro": "CV",
-                                                "veces": "Días con cambio", "envases": "Δ envases",
-                                                "eliminaciones": "Eliminaciones"}),
-                             width="stretch", hide_index=True)
+                rk = rk.rename(columns={"sala": "Sala", "nombre": "Nombre", "centro": "CV",
+                                        "veces": "Días con cambio", "envases": "Δ envases",
+                                        "eliminaciones": "Eliminaciones"})
+                st.dataframe(_formatear(rk, deltas=["Δ envases"]), width="stretch", hide_index=True)
         qui = mov[mov["d_quiebre"] != 0]
         with r2:
             st.markdown("**📉 Salas con más quiebre**")
@@ -293,9 +342,10 @@ def render():
                       .agg(veces=("fecha", "nunique"), envases=("d_quiebre", "sum"), venta=("venta", "sum"))
                       .sort_values(["veces", "envases"], ascending=[False, True]).head(20))
                 rk["venta"] = rk["venta"].map(_pesos)
-                st.dataframe(rk.rename(columns={"sala": "Sala", "nombre": "Nombre", "centro": "CV",
-                                                "veces": "Días con quiebre", "envases": "Envases no despachados",
-                                                "venta": "Venta no despachada"}),
+                rk = rk.rename(columns={"sala": "Sala", "nombre": "Nombre", "centro": "CV",
+                                        "veces": "Días con quiebre", "envases": "Envases no despachados",
+                                        "venta": "Venta no despachada"})
+                st.dataframe(_formatear(rk, deltas=["Envases no despachados"]),
                              width="stretch", hide_index=True)
         st.caption("💡 Las salas que se repiten son las que hay que conversar con ventas (cambios) "
                    "o con abastecimiento (quiebre).")
