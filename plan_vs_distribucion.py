@@ -137,8 +137,10 @@ def _productos(texto) -> list[dict]:
         if len(campos) < 4:
             continue
         try:
+            otros = campos[0] == "OTROS"      # el bot agrupa ahí lo que no cabe en el campo de Drivin
             filas.append({"producto": campos[0], "unidades": float(campos[1]), "envases": float(campos[2]),
-                          "venta": float(campos[3]), "descripcion": campos[4] if len(campos) > 4 else ""})
+                          "venta": float(campos[3]),
+                          "descripcion": "Otros (no detallados)" if otros else (campos[4] if len(campos) > 4 else "")})
         except ValueError:
             continue
     return filas
@@ -272,7 +274,9 @@ def _tab_productos(df: pd.DataFrame):
         st.dataframe(_formatear(det, enteros=["Unidades", "Envases"], pesos=["Venta"]),
                      width="stretch", hide_index=True)
     st.caption("Venta no despachada = lo que la sala pidió y no salió por falta de producto. "
-               "Suma lo mismo que la barra roja de quiebre en la cascada (vista venta).")
+               "Suma lo mismo que la barra roja de quiebre en la cascada (vista venta). "
+               "'Otros' agrupa los productos menores que no caben en el campo de Drivin; "
+               "el detalle completo está en el Excel del botón 3.")
 
 
 def render():
