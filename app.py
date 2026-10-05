@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
+import estado_dato   # ¿CxS con dato programado o distribuido? (botón 3 del bot DRIVIN)
 
 # ── Config ──────────────────────────────────────────────────
 TZ_CHILE = ZoneInfo("America/Santiago")
@@ -213,7 +214,8 @@ def load_data(start_date,end_date):
                 "reason":o.get("reason"),"otif":o.get("otif"),"near_pod":o.get("near_pod"),
                 "units_1":o.get("units_1") or 0,"units_2":o.get("units_2") or 0,
                 "units_3":o.get("units_3") or 0,"client_name":o.get("client_name"),
-                "tags":json.dumps(o.get("tags",[])),"pod_arrival":o.get("pod_arrival")})
+                "tags":json.dumps(o.get("tags",[])),"pod_arrival":o.get("pod_arrival"),
+                "dato_dist":estado_dato.es_distribuido(o)})   # True = ya pasó por el botón 3
     df=pd.DataFrame(rows)
     df["units_1"]=df["units_1"].apply(fmt_bultos)
     df["units_2"]=df["units_2"].apply(lambda x:int(float(x)) if pd.notna(x) and x!=0 else 0)
@@ -660,9 +662,10 @@ elif page=="📈 Tendencias":
 # ════════════════════════════════════════════════════════════
 elif page=="💰 CxS por Camión":
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">💰 Costo por Servir (CxS)</h2>',unsafe_allow_html=True)
+    estado_dato.panel(df)   # franja: qué CV ya tienen dato distribuido (botón 3)
     fletes,caps=load_vehicle_info()
     dc=df.copy(); dc["flete"]=dc["vehicle_code"].map(fletes).fillna(0).astype(int); dc["capacidad"]=dc["vehicle_code"].map(caps).fillna(0).astype(int)
-    va=dc.groupby(["vehicle_code","trip_number"]).agg(conductor=("driver_name","first"),operador=("employer_name","first"),centro=("schema_name","first"),salas=("address_code","nunique"),bultos=("units_1","sum"),venta=("units_2","sum"),flete=("flete","max"),capacidad=("capacidad","max")).reset_index()
+    va=dc.groupby(["vehicle_code","trip_number"]).agg(conductor=("driver_name","first"),operador=("employer_name","first"),centro=("schema_name","first"),salas=("address_code","nunique"),bultos=("units_1","sum"),venta=("units_2","sum"),flete=("flete","max"),capacidad=("capacidad","max"),dist=("dato_dist","mean")).reset_index()
     va["tipo_viaje"]=va["trip_number"].apply(lambda x:"Primera vuelta" if x==1 else "Segunda vuelta")
     va["max_cube"]=va.apply(lambda r:round(r["bultos"]/r["capacidad"]*100) if r["capacidad"]>0 else 0,axis=1)
     va["cxs_pct"]=va.apply(lambda r:round(r["flete"]/r["venta"]*100,2) if r["venta"]>0 else 0,axis=1)
@@ -678,11 +681,12 @@ elif page=="💰 CxS por Camión":
     sf=(va["flete"]==0).sum()
     if sf>0: st.markdown(f'<div class="alerta-yellow">⚠️ {sf} viaje(s) sin flete configurado</div>',unsafe_allow_html=True)
     st.divider()
-    vs=va[["vehicle_code","conductor","operador","centro","tipo_viaje","salas","bultos","max_cube","venta","flete","cxs_pct"]].copy()
+    vs=va[["vehicle_code","conductor","operador","centro","tipo_viaje","salas","bultos","max_cube","venta","flete","cxs_pct","dist"]].copy()
     vs["bultos"]=vs["bultos"].astype(int); vs["max_cube"]=vs["max_cube"].apply(lambda x:f"{x}%"); vs["venta"]=vs["venta"].apply(lambda x:f"${int(x):,}")
     vs["flete"]=vs["flete"].apply(lambda x:f"${int(x):,}" if x>0 else "Sin flete"); vs["cxs_pct"]=vs["cxs_pct"].apply(lambda x:f"{x}%")
-    vs.columns=["Vehículo","Conductor","Operador","Centro","Vuelta","Salas","Bultos","Max Cube","Venta","Flete","CxS %"]
-    st.dataframe(vs.style.map(color_vuelta,subset=["Vuelta"]).map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube"]),use_container_width=True,hide_index=True,height=600)
+    vs["dist"]=vs["dist"].map(estado_dato.etiqueta)   # Distribuido / Mixto / Programado
+    vs.columns=["Vehículo","Conductor","Operador","Centro","Vuelta","Salas","Bultos","Max Cube","Venta","Flete","CxS %","Dato"]
+    st.dataframe(vs.style.map(color_vuelta,subset=["Vuelta"]).map(color_cxs,subset=["CxS %"]).map(color_maxcube,subset=["Max Cube"]).map(estado_dato.color,subset=["Dato"]),use_container_width=True,hide_index=True,height=600)
     st.divider()
     st.markdown('<div class="section-title">📊 Resumen del Día</div>',unsafe_allow_html=True)
     r1,r2,r3=st.columns(3); r1.metric("Venta Total",f"${tv:,}"); r2.metric("Flete Total",f"${tf:,}"); r3.metric("CxS Total",f"{cg}%")
