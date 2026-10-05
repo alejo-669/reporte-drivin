@@ -8,6 +8,7 @@ por fecha, CV y sala, qué cambió entre lo programado y lo que salió:
   PROGRAMADO  -> custom_2 "v1|u1=..|u2=.."        (al programar)
   SOLICITADO  -> custom_3 "v1|o1=..|o2=..|e=.."   (al distribuir + estado de la sala)
   DISTRIBUIDO -> units_1 / units_2
+  QUIEBRE POR PRODUCTO -> custom_4 "v1|producto:unidades:envases:venta:descripcion|..."
 
   programado -> solicitado  = CAMBIO COMERCIAL (ventas: sube, baja, agrega, elimina)
   solicitado -> distribuido = QUIEBRE (no había producto)
@@ -105,6 +106,7 @@ def cargar_fecha(fecha: str) -> pd.DataFrame:
                     "prog_env": prog.get("u1"), "prog_venta": prog.get("u2"),
                     "sol_env": sol.get("o1"), "sol_venta": sol.get("o2"), "estado": sol.get("e"),
                     "dist_env": float(o.get("units_1") or 0), "dist_venta": float(o.get("units_2") or 0),
+                    "quiebre_prod": o.get("custom_4") or "",
                 })
     return pd.DataFrame(filas)
 
@@ -122,6 +124,31 @@ def cascada(df: pd.DataFrame, medida: str = "env") -> dict:
         "quiebre": -(df.loc[e != "ELIMINADA", s] - df.loc[e != "ELIMINADA", d]).sum(),
         "distribuido": df[d].sum(),
     }
+
+
+def _productos(texto) -> list[dict]:
+    """'v1|964770:80:4:207240:MinPing10p200g|...' -> lista de productos con quiebre."""
+    t = str(texto or "")
+    if not t.startswith("v1|"):
+        return []
+    filas = []
+    for parte in t.split("|")[1:]:
+        campos = parte.split(":", 4)
+        if len(campos) < 4:
+            continue
+        try:
+            filas.append({"producto": campos[0], "unidades": float(campos[1]), "envases": float(campos[2]),
+                          "venta": float(campos[3]), "descripcion": campos[4] if len(campos) > 4 else ""})
+        except ValueError:
+            continue
+    return filas
+
+
+def quiebre_productos(df: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por fecha, CV, sala y producto con lo que no salió."""
+    filas = [{"fecha": r.fecha, "centro": r.centro, "sala": r.sala, "nombre": r.nombre, **p}
+             for r in df[df["estado"] != "ELIMINADA"].itertuples() for p in _productos(r.quiebre_prod)]
+    return pd.DataFrame(filas)
 
 
 def movimientos(df: pd.DataFrame) -> pd.DataFrame:
@@ -199,6 +226,55 @@ def _grafico_cascada(c: dict, titulo: str, pesos: bool):
     return fig
 
 
+def _tab_productos(df: pd.DataFrame):
+    """Qué productos faltaron, en cuántas salas y cuánta venta no se despachó."""
+    qp = quiebre_productos(df)
+    if qp.empty:
+        st.info("Sin detalle por producto en este rango. El detalle se llena al correr el botón 3 "
+                "con la versión que escribe custom_4.")
+        return
+    total = qp["venta"].sum()
+    rk = (qp.groupby("producto", as_index=False)
+          .agg(descripcion=("descripcion", "first"), salas=("sala", "nunique"),
+               unidades=("unidades", "sum"), envases=("envases", "sum"), venta=("venta", "sum"))
+          .sort_values("venta", ascending=False))
+    rk["pct"] = rk["venta"] / total * 100 if total else 0
+    rk["acum"] = rk["pct"].cumsum()
+
+    # Conclusión primero: cuánto se perdió y cuántos productos lo explican
+    n80 = int((rk["acum"] < 80).sum()) + 1
+    k = st.columns(4)
+    k[0].metric("Venta no despachada", _pesos(total))
+    k[1].metric("Productos con quiebre", f"{len(rk)}")
+    k[2].metric("Salas afectadas", f"{qp['sala'].nunique()}")
+    k[3].metric("Explican el 80%", f"{min(n80, len(rk))} productos")
+
+    top = rk.head(10).iloc[::-1]
+    fig = go.Figure(go.Bar(x=top["venta"], y=top["descripcion"].where(top["descripcion"] != "", top["producto"]),
+                           orientation="h", marker_color=ROJO,
+                           text=[_pesos(v) for v in top["venta"]], textposition="outside"))
+    fig.update_layout(title="Top 10 productos por venta no despachada", template="plotly_white",
+                      height=120 + 32 * len(top), margin=dict(l=10, r=60, t=50, b=10),
+                      xaxis=dict(showticklabels=False))
+    st.plotly_chart(fig, width="stretch")
+
+    tabla = rk.rename(columns={"producto": "Producto", "descripcion": "Descripción", "salas": "Salas",
+                               "unidades": "Unidades no despachadas", "envases": "Envases no despachados",
+                               "venta": "Venta no despachada", "pct": "% del quiebre", "acum": "% acumulado"})
+    st.dataframe(_formatear(tabla, enteros=["Salas", "Unidades no despachadas", "Envases no despachados"],
+                            pesos=["Venta no despachada"], pct=["% del quiebre", "% acumulado"]),
+                 width="stretch", hide_index=True)
+
+    with st.expander("Ver detalle por sala"):
+        det = qp.sort_values(["fecha", "centro", "sala", "venta"], ascending=[True, True, True, False])
+        det = det[["fecha", "centro", "sala", "nombre", "producto", "descripcion", "unidades", "envases", "venta"]]
+        det.columns = ["Fecha", "CV", "Sala", "Nombre", "Producto", "Descripción", "Unidades", "Envases", "Venta"]
+        st.dataframe(_formatear(det, enteros=["Unidades", "Envases"], pesos=["Venta"]),
+                     width="stretch", hide_index=True)
+    st.caption("Venta no despachada = lo que la sala pidió y no salió por falta de producto. "
+               "Suma lo mismo que la barra roja de quiebre en la cascada (vista venta).")
+
+
 def render():
     st.markdown(f'<h2 style="color:{BIMBO_BLUE}">⚖️ Plan vs Distribución</h2>', unsafe_allow_html=True)
     st.caption("Qué cambió entre lo programado y lo que salió, sala por sala. Cambio comercial = ventas "
@@ -269,8 +345,11 @@ def render():
     st.plotly_chart(_grafico_cascada(c, f"Del plan a la distribución · {medida.lower()}", pesos),
                     width="stretch")
 
-    t1, t2, t3, t4 = st.tabs(["🔄 Salas con movimiento", "📋 Por fecha y CV",
-                              "🏆 Rankings", "📉 Fill rate"])
+    t1, t5, t2, t3, t4 = st.tabs(["🔄 Salas con movimiento", "📦 Productos con quiebre",
+                                  "📋 Por fecha y CV", "🏆 Rankings", "📉 Fill rate"])
+
+    with t5:
+        _tab_productos(df)
 
     with t1:
         mov = movimientos(df)
