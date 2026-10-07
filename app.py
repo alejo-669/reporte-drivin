@@ -361,12 +361,18 @@ with st.sidebar:
     st.divider()
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
+    DIAS_FUTURO=3   # permite ver programas ya aprobados en Drivin que aún no salen a ruta
     if page=="📈 Tendencias":
         f_dates=st.date_input("📅 Rango de fechas",value=(today-timedelta(days=6),today),max_value=today,min_value=today-timedelta(days=7))
     else:
-        f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today,min_value=today-timedelta(days=7))
+        f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today+timedelta(days=DIAS_FUTURO),min_value=today-timedelta(days=7))
+    # Si el usuario marca un solo día (tupla de 1), se usa ese día y no "hoy"
     if isinstance(f_dates,tuple) and len(f_dates)==2: start_d,end_d=f_dates
+    elif isinstance(f_dates,tuple) and len(f_dates)==1: start_d=end_d=f_dates[0]
     else: start_d=end_d=today
+    es_futuro=start_d>today   # plan aprobado que todavía no comienza
+    if es_futuro:
+        st.caption("🗓️ Fecha futura: se muestra el plan aprobado en Drivin (rutas aún sin iniciar).")
 
 # ── Comparador 48h vs 24h: pestaña independiente (no usa /pods) ──
 # Esta página tiene su propio selector de fechas interno (permite fechas
@@ -499,7 +505,10 @@ if page=="🏠 Inicio":
     st.markdown(f'<div class="section-title">🔔 Alertas del Día</div>',unsafe_allow_html=True)
 
     # Alerta: rutas sin iniciar pasadas las 7AM
-    if NOW_CHILE.hour>=ALERTA_HR_INICIO and sin_iniciar>0:
+    if es_futuro:
+        # Plan de un día que aún no llega: que no esté iniciado es lo normal, no una alerta
+        st.markdown(f'<div class="alerta-blue">🗓️ Plan programado para el {start_d.strftime("%d/%m/%Y")}: {len(vehiculos_u)} vehículos, aún sin salir a ruta</div>',unsafe_allow_html=True)
+    elif NOW_CHILE.hour>=ALERTA_HR_INICIO and sin_iniciar>0:
         st.markdown(f'<div class="alerta-box">🔴 {sin_iniciar} ruta(s) sin iniciar (ya pasaron las {ALERTA_HR_INICIO}:00 AM) de {len(vehiculos_u)} vehículos</div>',unsafe_allow_html=True)
     elif sin_iniciar>0:
         st.markdown(f'<div class="alerta-yellow">⚠️ {sin_iniciar} ruta(s) sin iniciar de {len(vehiculos_u)} vehículos</div>',unsafe_allow_html=True)
