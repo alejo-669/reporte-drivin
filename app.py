@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from streamlit_autorefresh import st_autorefresh
 import estado_dato   # ¿CxS con dato programado o distribuido? (botón 3 del bot DRIVIN)
+import historico_drivin   # días anteriores a la ventana de la API (respaldo diario en GitHub)
 
 # ── Config ──────────────────────────────────────────────────
 TZ_CHILE = ZoneInfo("America/Santiago")
@@ -176,6 +177,11 @@ def load_vehicle_info():
             if c1>0: caps[c]=int(c1)
     return fletes,caps
 
+VENTANA_API=6   # días hacia atrás que se leen en vivo desde Drivin; lo anterior sale del respaldo
+
+def primer_dia_api():
+    return NOW_CHILE.date()-timedelta(days=VENTANA_API)
+
 @st.cache_data(ttl=600)
 def load_data(start_date,end_date):
     import requests
@@ -183,16 +189,27 @@ def load_data(start_date,end_date):
     if not api_key:
         try: api_key=st.secrets["DRIVIN_API_KEY"]
         except: return pd.DataFrame()
-    try:
-        resp=requests.get("https://external.driv.in/api/external/v2/pods",
-            headers={"X-API-KEY":api_key,"Content-Type":"application/json"},
-            params={"start_date":start_date,"end_date":end_date},timeout=30)
-        resp.raise_for_status(); records=resp.json().get("response",[])
-    except Exception as e:
-        st.error(f"Error API: {e}"); return pd.DataFrame()
+    desde=datetime.strptime(start_date,"%Y-%m-%d").date()
+    hasta=datetime.strptime(end_date,"%Y-%m-%d").date()
+    limite=primer_dia_api()
+    records=[]
+    # 1) Días antiguos → respaldo diario en GitHub (si está configurado)
+    if desde<limite:
+        hist,_=historico_drivin.cargar(desde,min(hasta,limite-timedelta(days=1)))
+        records.extend(hist)
+    # 2) Días recientes y futuros → API de Drivin en vivo
+    if hasta>=limite:
+        try:
+            resp=requests.get("https://external.driv.in/api/external/v2/pods",
+                headers={"X-API-KEY":api_key,"Content-Type":"application/json"},
+                params={"start_date":max(desde,limite).strftime("%Y-%m-%d"),"end_date":end_date},timeout=30)
+            resp.raise_for_status(); vivos=resp.json().get("response",[])
+            records.extend(vivos)
+            try: init_db(); save_espera_snapshot(vivos)
+            except: pass
+        except Exception as e:
+            st.error(f"Error API: {e}")
     if not records: return pd.DataFrame()
-    try: init_db(); save_espera_snapshot(records)
-    except: pass
     rows=[]
     for r in records:
         base={"planned_date":r.get("planned_date"),"vehicle_code":r.get("vehicle_code"),
@@ -362,10 +379,12 @@ with st.sidebar:
     st.markdown("**🔍 Filtros**")
     today=NOW_CHILE.date()
     DIAS_FUTURO=3   # permite ver programas ya aprobados en Drivin que aún no salen a ruta
+    # Con respaldo configurado se puede ir hasta 1 año atrás; sin él, solo la ventana de la API
+    min_fecha=today-timedelta(days=365 if historico_drivin.configurado() else 7)
     if page=="📈 Tendencias":
-        f_dates=st.date_input("📅 Rango de fechas",value=(today-timedelta(days=6),today),max_value=today,min_value=today-timedelta(days=7))
+        f_dates=st.date_input("📅 Rango de fechas",value=(today-timedelta(days=6),today),max_value=today,min_value=min_fecha)
     else:
-        f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today+timedelta(days=DIAS_FUTURO),min_value=today-timedelta(days=7))
+        f_dates=st.date_input("📅 Fecha",value=(today,today),max_value=today+timedelta(days=DIAS_FUTURO),min_value=min_fecha)
     # Si el usuario marca un solo día (tupla de 1), se usa ese día y no "hoy"
     if isinstance(f_dates,tuple) and len(f_dates)==2: start_d,end_d=f_dates
     elif isinstance(f_dates,tuple) and len(f_dates)==1: start_d=end_d=f_dates[0]
@@ -373,6 +392,13 @@ with st.sidebar:
     es_futuro=start_d>today   # plan aprobado que todavía no comienza
     if es_futuro:
         st.caption("🗓️ Fecha futura: se muestra el plan aprobado en Drivin (rutas aún sin iniciar).")
+    if start_d<primer_dia_api():
+        # Días anteriores a la ventana de la API: se informa de dónde salen y si falta alguno
+        _,sin_respaldo=historico_drivin.cargar(start_d,min(end_d,primer_dia_api()-timedelta(days=1)))
+        st.caption(f"🗄️ Días anteriores al {primer_dia_api().strftime('%d/%m')} se leen del respaldo diario.")
+        if sin_respaldo:
+            st.caption("⚠️ Sin respaldo: "+", ".join(d.strftime("%d/%m") for d in sin_respaldo[:10])
+                       +(" …" if len(sin_respaldo)>10 else ""))
 
 # ── Comparador 48h vs 24h: pestaña independiente (no usa /pods) ──
 # Esta página tiene su propio selector de fechas interno (permite fechas
